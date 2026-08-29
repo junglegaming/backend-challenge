@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+
+# env
+.env
+.env.*.local
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# test / coverage
+coverage/
+.nyc_output/
+
+# editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# docker local state
+.localstack/
+docker/postgres-data/
+
+# misc
+*.tsbuildinfo
+.swc/
