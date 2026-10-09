@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: wagering
+    folder: Wagering
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

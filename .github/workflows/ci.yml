@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main, rodrigo-souza-challenge]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      load_test:
+        description: Run the load test (bun run test:load) against the docker compose stack
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint · typecheck · money-safety · unit
+    runs-on: ubuntu-24.04 # pinned: reproducible CI (ubuntu-latest moves to 26 on 2026-10-19)
+    steps:
+      - uses: actions/checkout@v5 # Node 24 runtime (v4 targets the deprecated Node 20)
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run check:money
+      - run: bun run test:unit
+
+  integration:
+    name: integration · concurrency (real PostgreSQL + SQS)
+    needs: quality
+    runs-on: ubuntu-24.04 # pinned: reproducible CI (ubuntu-latest moves to 26 on 2026-10-19)
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5 # Node 24 runtime (v4 targets the deprecated Node 20)
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Start PostgreSQL and MiniStack
+        run: docker compose -f docker-compose.test.yml up -d --wait
+      - run: bun run test:integration
+      - run: bun run test:concurrency
+      - name: Infra logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail 200
+
+  docker:
+    name: docker image + compose smoke test
+    needs: quality
+    runs-on: ubuntu-24.04 # pinned: reproducible CI (ubuntu-latest moves to 26 on 2026-10-19)
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5 # Node 24 runtime (v4 targets the deprecated Node 20)
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Build and start the stack (3 replicas behind nginx)
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 90); do curl -fsS localhost:8080/health/ready && exit 0; sleep 2; done
+          docker compose ps; exit 1
+      - name: End-to-end demo through the load balancer
+        run: bun run scripts/demo.ts
+      - name: Load test
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.load_test }}
+        run: bun run test:load -- --duration 60
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --tail 200

@@ -1,0 +1,129 @@
+# Full local stack:
+#   docker compose up -d --build                                   # postgres, sqs, bootstrap, 3 app replicas, nginx (:8080)
+#   OTEL_ENABLED=true docker compose --profile observability up -d # + prometheus (:9090), grafana (:3001), jaeger (:16686)
+name: wagering
+
+x-app-env: &app-env
+  NODE_ENV: production
+  PORT: "3000"
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  APP_ROLES: ${APP_ROLES:-api,consumer,outbox,pending-ref}
+  # Runtime role (DML only). The migrator role is used exclusively by the bootstrap job.
+  DATABASE_URL: postgres://wagering_app:${APP_DB_PASSWORD:-app_dev_password}@postgres:5432/wagering
+  DB_POOL_MAX: ${DB_POOL_MAX:-20}
+  DB_LOCK_TIMEOUT_MS: ${DB_LOCK_TIMEOUT_MS:-2000}
+  AWS_REGION: us-east-1
+  SQS_ENDPOINT: http://sqs:4566
+  SQS_VERIFY_MD5: "false"
+  SQS_MAX_RECEIVE_COUNT: "5"
+  SQS_VISIBILITY_TIMEOUT_S: "30"
+  SQS_BATCH_PER_WALLET: ${SQS_BATCH_PER_WALLET:-true}
+  SUPPORTED_CURRENCIES: ${SUPPORTED_CURRENCIES:-BRL,USD,EUR}
+  OTEL_ENABLED: ${OTEL_ENABLED:-false}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  SHUTDOWN_GRACE_MS: "20000"
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    command: ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=256MB"]
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sqs:
+    image: ministackorg/ministack:1.5.22
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4566/_ministack/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot job: schema migrations (as the schema owner) + queues/DLQ/redrive policy. Idempotent.
+  bootstrap:
+    build: .
+    image: wagering-processor:local
+    environment:
+      <<: *app-env
+      DATABASE_MIGRATOR_URL: postgres://wagering_migrator:${MIGRATOR_DB_PASSWORD:-migrator_dev_password}@postgres:5432/wagering
+    command: ["sh", "-c", "bun run src/infrastructure/database/migrate.ts up && bun run scripts/setup-queues.ts"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sqs:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: wagering-processor:local
+    environment: *app-env
+    deploy:
+      replicas: ${APP_REPLICAS:-3}
+    stop_grace_period: 30s
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  # Edge: load balancing + per-IP rate/connection limits, slow-client timeouts, internal endpoints hidden.
+  # Benchmarks from a single host may need higher limits, e.g. LB_RATE_LIMIT_RPS=100000 docker compose up -d lb
+  lb:
+    image: nginx:1.29-alpine
+    ports:
+      - "8080:80"
+    environment:
+      LB_RATE_LIMIT_RPS: ${LB_RATE_LIMIT_RPS:-500}
+      LB_RATE_LIMIT_BURST: ${LB_RATE_LIMIT_BURST:-1000}
+      LB_HEAVY_RATE_LIMIT_RPS: ${LB_HEAVY_RATE_LIMIT_RPS:-10}
+      LB_HEAVY_RATE_LIMIT_BURST: ${LB_HEAVY_RATE_LIMIT_BURST:-20}
+      LB_MAX_CONN_PER_IP: ${LB_MAX_CONN_PER_IP:-256}
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/proxy.inc:/etc/nginx/proxy.inc:ro
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+    depends_on:
+      - app
+
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    profiles: [observability]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:13.0.10
+    profiles: [observability]
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/wagering.json
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    profiles: [observability]
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
+volumes:
+  pgdata:

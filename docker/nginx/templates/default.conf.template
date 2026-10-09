@@ -1,0 +1,82 @@
+# Edge protections. Values come from the environment (docker-compose.yml → lb service), rendered by envsubst.
+#
+# This is the last line of defence, per client IP. In production the same role is played (better) by a WAF/CDN
+# for volumetric attacks and by the API gateway for per-provider quotas keyed by the authenticated client_id —
+# a provider usually calls from few IPs, so per-IP limits must stay generous.
+
+# Per-client-IP budgets. $binary_remote_addr = 4 bytes (IPv4) per key; 20 MB ≈ 320k tracked addresses.
+limit_req_zone  $binary_remote_addr zone=per_ip:20m       rate=${LB_RATE_LIMIT_RPS}r/s;
+limit_req_zone  $binary_remote_addr zone=per_ip_heavy:5m  rate=${LB_HEAVY_RATE_LIMIT_RPS}r/s;
+limit_conn_zone $binary_remote_addr zone=conn_per_ip:10m;
+limit_req_status  429;
+limit_conn_status 429;
+limit_req_log_level warn;
+limit_conn_log_level warn;
+
+# One id per request for nginx and app logs: the client's X-Correlation-Id when present, otherwise nginx's own.
+map $http_x_correlation_id $correlation_id {
+  ""      $request_id;
+  default $http_x_correlation_id;
+}
+log_format edge '$remote_addr [$time_iso8601] "$request_method $uri" $status $body_bytes_sent '
+                'rt=$request_time urt=$upstream_response_time cid=$correlation_id';
+
+upstream wagering {
+  zone wagering 64k;
+  server app:3000 resolve;
+  keepalive 64;
+  # Must stay below the app server's keep-alive (Node/Bun default 5 s): otherwise nginx may reuse a connection the
+  # app is closing at that instant, and a POST (never retried on another replica) fails with 502.
+  keepalive_timeout 4s;
+}
+
+server {
+  listen 80 default_server;
+  access_log /dev/stdout edge;
+  default_type application/json;
+
+  # Slow-client protection (slowloris): bounded headers/body time and size.
+  client_max_body_size 32k;
+  client_body_timeout 10s;
+  client_header_timeout 10s;
+  send_timeout 10s;
+  keepalive_timeout 30s;
+  large_client_header_buffers 4 8k;
+
+  # Rate and concurrency per client IP; bursts are absorbed without delay up to the burst size, then 429.
+  limit_conn conn_per_ip ${LB_MAX_CONN_PER_IP};
+  limit_req zone=per_ip burst=${LB_RATE_LIMIT_BURST} nodelay;
+
+  # Edge rejections follow the API error contract ({code, message}).
+  error_page 429 @rate_limited;
+  location @rate_limited {
+    add_header Retry-After 1 always;
+    return 429 '{"code":"RATE_LIMITED","message":"too many requests"}';
+  }
+  # "=503": the client sees 503 + Retry-After (the API's transient contract), not the raw 502/504.
+  error_page 502 504 =503 @unavailable;
+  location @unavailable {
+    add_header Retry-After 1 always;
+    return 503 '{"code":"TRANSIENT_FAILURE","message":"service temporarily unavailable"}';
+  }
+
+  # The API only speaks GET/POST (HEAD comes with GET). Anything else is refused at the edge.
+  if ($request_method !~ ^(GET|HEAD|POST)$) {
+    return 405 '{"code":"METHOD_NOT_ALLOWED","message":"method not allowed"}';
+  }
+
+  # Internal-only: Prometheus scrapes the replicas directly on the internal network. The health endpoints stay public
+  # (required by the challenge, unauthenticated); readiness only reports ok/unavailable per dependency, no raw errors.
+  location = /metrics { return 404 '{"code":"NOT_FOUND","message":"not found"}'; }
+
+  # Expensive endpoint (full ledger scan): its own, much smaller budget on top of the general one.
+  location ~ ^/wallets/[^/]+/reconciliation$ {
+    limit_req zone=per_ip burst=${LB_RATE_LIMIT_BURST} nodelay;
+    limit_req zone=per_ip_heavy burst=${LB_HEAVY_RATE_LIMIT_BURST} nodelay;
+    include /etc/nginx/proxy.inc;
+  }
+
+  location / {
+    include /etc/nginx/proxy.inc;
+  }
+}

@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  # One target per replica, discovered through Docker DNS.
+  - job_name: wagering
+    dns_sd_configs:
+      - names: [app]
+        type: A
+        port: 3000

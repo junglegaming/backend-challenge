@@ -1,0 +1,41 @@
+# Infra-only stack used by integration/concurrency tests and local development (app runs on the host with Bun).
+name: wagering-test
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    command:
+      - postgres
+      - -c
+      - max_connections=400
+      # Durability is irrelevant for throwaway test data; this keeps the suites fast.
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./docker/postgres/init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  sqs:
+    image: ministackorg/ministack:1.5.22
+    ports:
+      - "54566:4566"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4566/_ministack/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
