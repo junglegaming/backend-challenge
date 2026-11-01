@@ -3,6 +3,8 @@ import {
   SqlInboxStore,
   SqlOutboxRepository,
 } from "../../src/messaging/infrastructure/repositories";
+import { JsonLogger } from "../../src/observability/json-logger";
+import { LogContext } from "../../src/observability/log-context";
 import { WageringTelemetry } from "../../src/observability/wagering-telemetry";
 import { NoopSyncPoint } from "../../src/shared/application/sync-point";
 import { OpenWallet } from "../../src/wagering/application/open-wallet";
@@ -29,7 +31,8 @@ export function wageringHarness(fixture = testDatabase()) {
   const ledger = new SqlLedgerRepository();
   const outbox = new SqlOutboxRepository();
   const inbox = new SqlInboxStore();
-  const telemetry = new WageringTelemetry();
+  const context = new LogContext();
+  const telemetry = new WageringTelemetry(new JsonLogger({ values }, context), context);
   const settlement = new SettlementWriter(wallets, transactions, ledger, outbox, { values });
   return {
     database,
@@ -51,7 +54,7 @@ export function wageringHarness(fixture = testDatabase()) {
       telemetry,
       new NoopSyncPoint(),
     ),
-    open: new OpenWallet(uow, wallets, transactions, ledger, outbox),
+    open: new OpenWallet(uow, wallets, transactions, ledger, outbox, telemetry),
     resolve: new ResolvePendingTransaction(uow, wallets, transactions, settlement, telemetry),
     queries: new WageringQueries(uow, wallets, transactions, ledger),
     reconcile: new ReconcileWallet(uow, new SqlReconciliationRepository(), telemetry),

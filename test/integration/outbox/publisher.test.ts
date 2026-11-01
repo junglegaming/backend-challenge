@@ -19,7 +19,7 @@ const live = wageringHarness();
 const transport = new SqsTransport({ values: h.values });
 const consumer = new EventConsumer(h.uow, transport, `events-${randomUUID()}`);
 const publisher = (sync = new NoopSyncPoint()) =>
-  new OutboxPublisher({ values: h.values }, h.uow, h.outbox, transport, sync);
+  new OutboxPublisher({ values: h.values }, h.uow, h.outbox, transport, sync, h.telemetry);
 beforeAll(() => consumer.initialize());
 afterEach(async () => {
   await assertLedgerInvariant(h.database);
@@ -126,6 +126,10 @@ test("two publishers claim many rows once per lease, release SQL locks before se
 });
 
 test("a real partial SendMessageBatch failure publishes only confirmed IDs and retries the other entry", async () => {
+  const failuresBefore = (await h.telemetry.publishFailures.get()).values[0]?.value ?? 0;
+  const retriesBefore =
+    (await h.telemetry.retries.get()).values.find((v) => v.labels.operation === "outbox")?.value ??
+    0;
   const ids = await seedEvents(2);
   const failedId = ids[0];
   const goodId = ids[1];
@@ -162,6 +166,7 @@ test("a real partial SendMessageBatch failure publishes only confirmed IDs and r
   }
   expect(injected).toBe(true);
   expect(response?.Successful?.map((entry) => entry.Id)).toEqual([goodId]);
+  expect((await h.telemetry.publishFailures.get()).values[0]?.value).toBe(failuresBefore + 1);
   expect(response?.Failed?.map((entry) => ({ id: entry.Id, code: entry.Code }))).toEqual([
     { id: failedId, code: "MissingParameter" },
   ]);
@@ -178,6 +183,14 @@ test("a real partial SendMessageBatch failure publishes only confirmed IDs and r
     15_000,
   );
   expect((await outboxRows(ids)).find((row) => row.id === goodId)?.attempts).toBe(1);
+  expect(
+    (await h.telemetry.retries.get()).values.find((v) => v.labels.operation === "outbox")?.value,
+  ).toBe(retriesBefore + 1);
+  expect(
+    (await h.telemetry.published.get()).values.some(
+      (v) => v.labels.event_type === "WalletBalanceChanged" && v.value > 0,
+    ),
+  ).toBe(true);
   expect((await outboxRows(ids)).find((row) => row.id === failedId)?.attempts).toBe(2);
   const deliveries = await consumer.waitFor(ids);
   const repeated = deliveries[0];

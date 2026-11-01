@@ -2,6 +2,7 @@ export const testProject = "wagering-test";
 export const testEnvironment = {
   ...process.env,
   NODE_ENV: "test",
+  COMPOSE_PROFILES: "observability",
   SQS_WAIT_SECONDS: "1",
   SQS_VISIBILITY_SECONDS: "5",
   SQS_RETRY_BASE_SECONDS: "1",

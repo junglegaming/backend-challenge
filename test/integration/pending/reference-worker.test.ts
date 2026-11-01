@@ -157,8 +157,8 @@ test("two independent worker instances skip a locked wallet, then settle every d
   }
   const config = { values: { ...h.values, role: "worker" as const } };
   const workers = [
-    new PendingReferenceWorker(config, h.resolve),
-    new PendingReferenceWorker(config, other.resolve),
+    new PendingReferenceWorker(config, h.resolve, h.telemetry),
+    new PendingReferenceWorker(config, other.resolve, other.telemetry),
   ];
   try {
     for (const worker of workers) worker.onModuleInit();
@@ -201,7 +201,7 @@ test("expiry preserves the first deadline across replay/restart and atomically r
     expect(completed(await local.submit.handle(command)).status).toBe("PENDING_REFERENCE");
     await due([pending.transactionId], local);
     const config = { values: { ...local.values, role: "worker" as const } };
-    const firstWorker = new PendingReferenceWorker(config, local.resolve);
+    const firstWorker = new PendingReferenceWorker(config, local.resolve, local.telemetry);
     try {
       firstWorker.onModuleInit();
       await pollUntil(
@@ -231,7 +231,11 @@ test("expiry preserves the first deadline across replay/restart and atomically r
     }
     expect((await read())?.status).toBe(Status.PendingReference);
     await due([pending.transactionId], restarted);
-    const restartedWorker = new PendingReferenceWorker(config, restarted.resolve);
+    const restartedWorker = new PendingReferenceWorker(
+      config,
+      restarted.resolve,
+      restarted.telemetry,
+    );
     try {
       restartedWorker.onModuleInit();
       await pollUntil(

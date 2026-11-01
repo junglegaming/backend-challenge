@@ -6,6 +6,8 @@ import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify
 import { Configuration } from "../../../src/config/config";
 import { Scopes } from "../../../src/identity/authorization";
 import { IdentityModule } from "../../../src/identity/identity.module";
+import { JsonLogger } from "../../../src/observability/json-logger";
+import { LogContext } from "../../../src/observability/log-context";
 import { configureHttp } from "../../../src/shared/http/configure-http";
 import type { HttpRequest } from "../../../src/shared/http/http-contract";
 import { assertLedgerInvariant, testDatabase } from "../../support/database";
@@ -37,8 +39,12 @@ async function identityProbe(auth: { issuer: string; jwksUrl: string }) {
       imports: [
         {
           module: ProbeConfigurationModule,
-          providers: [{ provide: Configuration, useValue: { values: { ...values, auth } } }],
-          exports: [Configuration],
+          providers: [
+            { provide: Configuration, useValue: { values: { ...values, auth } } },
+            LogContext,
+            JsonLogger,
+          ],
+          exports: [Configuration, LogContext, JsonLogger],
         },
         IdentityModule,
       ],

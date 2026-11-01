@@ -4,6 +4,9 @@ import type { Message } from "@aws-sdk/client-sqs";
 import { parseConfiguration } from "../../src/config/config";
 import { WagerConsumer } from "../../src/messaging/application/wager-consumer";
 import type { SqsTransport } from "../../src/messaging/infrastructure/sqs-transport";
+import { JsonLogger } from "../../src/observability/json-logger";
+import { LogContext } from "../../src/observability/log-context";
+import { WageringTelemetry } from "../../src/observability/wagering-telemetry";
 import { NoopSyncPoint } from "../../src/shared/application/sync-point";
 import type { Database } from "../../src/shared/infrastructure/database";
 import type {
@@ -76,12 +79,14 @@ test("drain expiry releases every received receipt before closing SQS, including
     AUTH_ISSUER: "http://unused/realm",
     AUTH_JWKS_URL: "http://unused/keys",
   });
+  const context = new LogContext();
   const consumer = new WagerConsumer(
     { values },
     transport,
     submit,
     {} as Database,
     new NoopSyncPoint(),
+    new WageringTelemetry(new JsonLogger({ values }, context), context),
   );
   consumer.onModuleInit();
   try {
