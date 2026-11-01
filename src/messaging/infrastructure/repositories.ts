@@ -63,21 +63,23 @@ export class SqlOutboxRepository extends OutboxWriter {
     );
     return rows.map((row) => outboxFromRecord(em.map(OutboxRecord, row)));
   }
-  async save(tx: TransactionContext, message: OutboxMessage): Promise<void> {
-    await managerFor(tx).nativeUpdate(
-      OutboxRecord,
-      { id: message.id },
-      {
-        attempts: message.attempts,
-        nextAttemptAt: message.nextAttemptAt,
-        publishedAt: message.publishedAt,
-      },
+  async saveRetries(tx: TransactionContext, messages: OutboxMessage[]): Promise<void> {
+    if (!messages.length) return;
+    await managerFor(tx).execute(
+      `UPDATE outbox_messages AS target
+       SET attempts = source.attempts, next_attempt_at = source.next_attempt_at
+       FROM (VALUES ${messages.map(() => "(?::uuid, ?::integer, ?::timestamptz)").join(",")})
+         AS source(id, attempts, next_attempt_at)
+       WHERE target.id = source.id`,
+      messages.flatMap((message) => [message.id, message.attempts, message.nextAttemptAt]),
     );
   }
-  async markPublished(tx: TransactionContext, id: string, at: Date): Promise<void> {
+  async markPublished(tx: TransactionContext, ids: string[], at: Date): Promise<void> {
+    if (!ids.length) return;
     await managerFor(tx).execute(
-      "UPDATE outbox_messages SET published_at = ? WHERE id = ? AND published_at IS NULL",
-      [at, id],
+      `UPDATE outbox_messages SET published_at = ?
+       WHERE id IN (${ids.map(() => "?").join(",")}) AND published_at IS NULL`,
+      [at, ...ids],
     );
   }
 }

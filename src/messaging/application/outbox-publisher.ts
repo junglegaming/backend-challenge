@@ -46,8 +46,8 @@ export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
           leaseMs: this.configuration.values.outbox.leaseMs,
           maxMs: this.configuration.values.outbox.retryMaxMs,
         });
-        await this.outbox.save(tx, message);
       }
+      await this.outbox.saveRetries(tx, claimed);
       return claimed;
     });
     if (!messages.length || this.drainExpired) return 0;
@@ -80,9 +80,11 @@ export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
     if (this.drainExpired) return 0;
     await this.uow.run(async (tx) => {
       const now = new Date();
-      for (const message of messages) {
-        if (confirmed.has(message.id)) await this.outbox.markPublished(tx, message.id, now);
-      }
+      await this.outbox.markPublished(
+        tx,
+        messages.filter((message) => confirmed.has(message.id)).map((message) => message.id),
+        now,
+      );
     });
     for (const message of messages) {
       if (confirmed.has(message.id))
