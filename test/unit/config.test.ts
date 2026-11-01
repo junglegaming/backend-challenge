@@ -10,6 +10,8 @@ const configuration = {
   AWS_REGION: "us-east-1",
   AWS_ACCESS_KEY_ID: "local",
   AWS_SECRET_ACCESS_KEY: "local",
+  AUTH_ISSUER: "http://keycloak:8080/realms/wagering",
+  AUTH_JWKS_URL: "http://keycloak:8080/realms/wagering/protocol/openid-connect/certs",
 };
 
 describe("startup configuration", () => {
@@ -33,6 +35,14 @@ describe("startup configuration", () => {
     expect(() => parseConfiguration({ ...configuration, APP_ROLE: "unknown" })).toThrow("APP_ROLE");
     expect(() => parseConfiguration({ ...configuration, SQS_ENDPOINT: "file:///secret" })).toThrow(
       "SQS_ENDPOINT",
+    );
+  });
+  test.each(["AUTH_ISSUER", "AUTH_JWKS_URL"])("requires an HTTP identity URL for %s", (name) => {
+    expect(() => parseConfiguration({ ...configuration, [name]: undefined })).toThrow(
+      `Missing configuration: ${name}`,
+    );
+    expect(() => parseConfiguration({ ...configuration, [name]: "file:///invalid" })).toThrow(
+      `Invalid configuration: ${name}`,
     );
   });
 });

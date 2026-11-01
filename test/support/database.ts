@@ -31,6 +31,8 @@ export function testDatabase() {
     AWS_REGION: "us-east-1",
     AWS_ACCESS_KEY_ID: "local",
     AWS_SECRET_ACCESS_KEY: "local",
+    AUTH_ISSUER: "http://keycloak:8080/realms/wagering",
+    AUTH_JWKS_URL: "http://127.0.0.1:18080/realms/wagering/protocol/openid-connect/certs",
   });
   const database = new Database({ values });
   return { database, uow: new MikroOrmUnitOfWork(database), values };
