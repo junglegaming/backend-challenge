@@ -1,4 +1,5 @@
 import { compose, composeUp, testEnvironment } from "../test/support/stack";
+import { chaosEnvironment, toxiproxy } from "../test/support/toxiproxy";
 
 const action = process.argv[2];
 if (action === "up") {
@@ -27,6 +28,21 @@ if (action === "up") {
   if (existing.trim())
     throw new Error("wagering-test already exists; refusing to replace its services");
   try {
+    if (action === "failure") {
+      Object.assign(testEnvironment, chaosEnvironment);
+      // Bootstrap also uses the fault route, so populate proxies before it connects.
+      await compose([
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        "90",
+        "postgres",
+        "ministack",
+        "toxiproxy",
+      ]);
+      await toxiproxy.populate();
+    }
     await composeUp();
     const child = Bun.spawn(
       ["bun", "--no-env-file", "test", `test/${action}`, "--timeout", "60000"],

@@ -52,6 +52,17 @@ x-app: &app
     start_period: 10s
 
 services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.13.0
+    profiles: [chaos]
+    init: true
+    ports: ["127.0.0.1:${TOXIPROXY_HOST_PORT:-8474}:8474"]
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   prometheus:
     image: prom/prometheus:v3.15.1
     profiles: [observability]

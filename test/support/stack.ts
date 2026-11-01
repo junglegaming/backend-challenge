@@ -4,7 +4,10 @@ export const testEnvironment = {
   NODE_ENV: "test",
   BUN_CONFIG_NO_ENV_FILE: "true",
   BUN_CONFIG_NO_AUTO_INSTALL: "true",
-  COMPOSE_PROFILES: "observability",
+  COMPOSE_PROFILES:
+    process.env.WAGERING_STACK_MANAGED === "1"
+      ? (process.env.COMPOSE_PROFILES ?? "observability")
+      : "observability",
   SQS_WAIT_SECONDS: "1",
   SQS_VISIBILITY_SECONDS: "5",
   SQS_RETRY_BASE_SECONDS: "1",
