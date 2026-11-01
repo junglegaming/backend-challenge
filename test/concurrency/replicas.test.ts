@@ -539,14 +539,69 @@ test("scenario 6: two runtime publishers drain load and a crash after send produ
   await consumer.initialize();
   let paused: string | undefined;
   try {
+    await outboxDrained();
+    await compose(["stop", "worker"]);
     const wallets = await Promise.all(Array.from({ length: 36 }, () => openHttpWallet()));
     const ids = wallets.map((w) => w.id);
-    await outboxDrained();
     const published = await sql<{ id: string }>(
-      `SELECT id FROM outbox_messages WHERE payload->'data'->>'walletId' IN (${ids.map(() => "?").join(",")})`,
+      `SELECT id FROM outbox_messages WHERE payload->'data'->>'walletId' IN (${ids.map(() => "?").join(",")}) ORDER BY next_attempt_at, id`,
       ids,
     );
+    expect(published).toHaveLength(72);
     const eventIds = new Set(published.map((r) => r.id));
+    const participationTarget = published[0];
+    if (!participationTarget) throw new Error("Missing publisher participation target");
+    // A finite burst need not be shared fairly. Hold one committed claim while the
+    // other runtime publisher proves progress, then release the holder by graceful stop.
+    const participationEnvironment = {
+      ...testEnvironment,
+      TEST_SYNC_POINTS: "publisher.after_claim_before_send",
+      TEST_SYNC_MATCH: participationTarget.id,
+      OUTBOX_LEASE_MS: "60000",
+      OUTBOX_RETRY_MAX_MS: "60000",
+    };
+    await compose(
+      ["up", "-d", "--no-deps", "--force-recreate", "--scale", "worker=1", "worker"],
+      undefined,
+      participationEnvironment,
+    );
+    const claimed = await runtimeEvent(
+      "worker",
+      (r) =>
+        r.event === "sync_point_reached" &&
+        r.point === "publisher.after_claim_before_send" &&
+        r.operationId === participationTarget.id,
+    );
+    const holder = await instanceContainer("worker", String(claimed.instanceId));
+    await compose(
+      ["up", "-d", "--no-deps", "--scale", "worker=2", "worker"],
+      undefined,
+      participationEnvironment,
+    );
+    await runtimeEvent(
+      "worker",
+      (r) =>
+        r.event === "outbox_publish_completed" &&
+        r.confirmed === true &&
+        eventIds.has(String(r.eventId)) &&
+        r.instanceId !== claimed.instanceId,
+    );
+    expect(
+      await sql<{ attempts: number; published_at: Date | null }>(
+        "SELECT attempts, published_at FROM outbox_messages WHERE id = ?",
+        [participationTarget.id],
+      ),
+    ).toEqual([{ attempts: 1, published_at: null }]);
+    await changeContainer(holder, "stop");
+    await runtimeEvent(
+      "worker",
+      (r) =>
+        r.event === "outbox_publish_completed" &&
+        r.eventId === participationTarget.id &&
+        r.confirmed === true &&
+        r.instanceId === claimed.instanceId,
+    );
+    await outboxDrained();
     const publishers = new Set(
       (await runtimeLogs("worker"))
         .filter(
