@@ -52,6 +52,75 @@ x-app: &app
     start_period: 10s
 
 services:
+  verification-tools:
+    image: wagering-verification:local
+    build:
+      context: ./docker/verification
+    profiles: [verification]
+    init: true
+    logging: { driver: none }
+    network_mode: host
+    working_dir: ${VERIFICATION_SOURCE_DIR:-/verification-source}
+    volumes:
+      - ${VERIFICATION_SOURCE_DIR:-.}:${VERIFICATION_SOURCE_DIR:-/verification-source}:ro
+      - ${VERIFICATION_OUTPUT_DIR:-/tmp/wagering-verification}:${VERIFICATION_OUTPUT_DIR:-/verification-output}
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      BUN_CONFIG_NO_ENV_FILE: "true"
+      BUN_CONFIG_NO_AUTO_INSTALL: "true"
+      GIT_OPTIONAL_LOCKS: "0"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${VERIFICATION_SOURCE_DIR:-/verification-source}
+
+  verification-oha:
+    image: ghcr.io/hatoo/oha:1.16.0@sha256:3ec3dbf549ea197793482d47a6324797411406bbf438c2fe8b91f244ec641a2f
+    profiles: [verification]
+    logging: { driver: none }
+    network_mode: host
+
+  verification-pumba:
+    image: ghcr.io/alexei-led/pumba:1.2.1@sha256:780505fe261932765921c94a23e24bda107c72927654c26a5893a238d7708bf0
+    profiles: [verification]
+    logging: { driver: none }
+    volumes: [/var/run/docker.sock:/var/run/docker.sock]
+
+  verification-k6:
+    image: grafana/k6:2.3.0
+    profiles: [verification]
+    logging: { driver: none }
+    network_mode: host
+    volumes:
+      - ${VERIFICATION_SOURCE_DIR:-.}:${VERIFICATION_SOURCE_DIR:-/verification-source}:ro
+
+  verification-tcpdump-postgres:
+    image: wagering-verification:local
+    profiles: [verification]
+    logging: { driver: none }
+    network_mode: service:postgres
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, NET_ADMIN, SETGID]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    stop_signal: SIGINT
+    entrypoint: [tcpdump]
+    command: [-Z, root, -p, -i, any, -nn, -tt, -q, -l, "ip and tcp and port 5432 and not host 127.0.0.1"]
+
+  verification-tcpdump-ministack:
+    image: wagering-verification:local
+    profiles: [verification]
+    logging: { driver: none }
+    network_mode: service:ministack
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, NET_ADMIN, SETGID]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    stop_signal: SIGINT
+    entrypoint: [tcpdump]
+    command: [-Z, root, -p, -i, any, -nn, -tt, -q, -l, "ip and tcp and port 4566 and not host 127.0.0.1"]
+
   k6:
     image: grafana/k6:2.3.0
     profiles: [load]

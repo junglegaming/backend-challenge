@@ -15,6 +15,7 @@
     "test:concurrency": "bun scripts/with-stack.ts concurrency",
     "test:failure": "bun scripts/with-stack.ts failure",
     "test:load": "bun scripts/load-test.ts",
+    "verify:manual": "bun scripts/verify-manual.ts",
     "stack:up": "bun scripts/with-stack.ts up",
     "stack:down": "bun scripts/with-stack.ts down",
     "migration:up": "bun src/cli/migration.ts up",
