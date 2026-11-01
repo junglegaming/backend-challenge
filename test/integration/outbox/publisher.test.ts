@@ -206,6 +206,75 @@ test("a real partial SendMessageBatch failure publishes only confirmed IDs and r
   expect(await consumer.effectCount(repeated.payload.eventId)).toBe(1);
 }, 30_000);
 
+test("a SQL confirmation failure after successful send preserves every lease and recovers without duplicate effects", async () => {
+  const ids = await seedEvents(3);
+  const publishedBefore = (await h.telemetry.published.get()).values.reduce(
+    (count, value) => count + value.value,
+    0,
+  );
+  const accepted = new Set<string>();
+  transport.client.middlewareStack.add(
+    (next, context) => async (args) => {
+      const result = await next(args);
+      if (context.commandName === "SendMessageBatchCommand") {
+        for (const entry of (result.output as SendMessageBatchCommandOutput).Successful ?? [])
+          if (entry.Id && ids.includes(entry.Id)) accepted.add(entry.Id);
+      }
+      return result;
+    },
+    { step: "initialize", name: "observeSuccessfulConfirmationFault" },
+  );
+  await h.uow.run(async (tx) => {
+    const em = managerFor(tx);
+    await em.execute("CREATE TABLE test_confirmation_fault (event_id uuid PRIMARY KEY)");
+    await em.execute("INSERT INTO test_confirmation_fault VALUES (?)", [ids[1]]);
+    await em.execute(`CREATE FUNCTION fail_test_confirmation() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.published_at IS NOT NULL AND EXISTS (
+          SELECT 1 FROM test_confirmation_fault WHERE event_id = NEW.id
+        ) THEN RAISE EXCEPTION 'confirmation fault fixture'; END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql`);
+    await em.execute(`CREATE TRIGGER test_confirmation_fault BEFORE UPDATE OF published_at
+      ON outbox_messages FOR EACH ROW EXECUTE FUNCTION fail_test_confirmation()`);
+  });
+  try {
+    await expect(publisher().publishDue()).rejects.toThrow("confirmation fault fixture");
+    expect(accepted).toEqual(new Set(ids));
+    const rows = await outboxRows(ids);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.published_at === null && row.attempts === 1)).toBe(true);
+    expect(rows.every((row) => row.next_attempt_at.getTime() > Date.now())).toBe(true);
+    expect(
+      (await h.telemetry.published.get()).values.reduce((count, value) => count + value.value, 0),
+    ).toBe(publishedBefore);
+    expect(await publisher().publishDue()).toBe(0);
+    expect(await consumer.waitFor(ids)).toHaveLength(3);
+  } finally {
+    transport.client.middlewareStack.remove("observeSuccessfulConfirmationFault");
+    await h.uow.run(async (tx) => {
+      const em = managerFor(tx);
+      await em.execute("DROP TRIGGER test_confirmation_fault ON outbox_messages");
+      await em.execute("DROP FUNCTION fail_test_confirmation()");
+      await em.execute("DROP TABLE test_confirmation_fault");
+    });
+  }
+  await pollUntil(
+    "recovery after SQL confirmation rollback",
+    async () => {
+      await publisher().publishDue();
+      return (await outboxRows(ids)).every((row) => row.published_at !== null);
+    },
+    15_000,
+  );
+  expect((await outboxRows(ids)).map((row) => row.attempts)).toEqual(ids.map(() => 2));
+  expect(
+    (await h.telemetry.published.get()).values.reduce((count, value) => count + value.value, 0),
+  ).toBe(publishedBefore + ids.length);
+  for (const id of ids) expect(await consumer.effectCount(id)).toBe(1);
+}, 30_000);
+
 test("active stack workers publish all mandatory outcomes with stable identities and no balance event for LOSS", async () => {
   const wallet = await live.open.handle({
     playerId: randomUUID(),
