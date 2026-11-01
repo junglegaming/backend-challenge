@@ -29,7 +29,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
   private probeAttempt = 0;
   private stopping = false;
   private drainExpired = false;
-  private readonly active = new Set<Message>();
+  private readonly outstanding = new Set<Message>();
 
   constructor(
     private readonly configuration: Configuration,
@@ -63,6 +63,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
     const messages = await this.transport.receive(QUEUES.requests, signal);
     const groups = new Map<string, Message[]>();
     for (const message of messages) {
+      this.outstanding.add(message);
       const groupId = message.Attributes?.MessageGroupId ?? message.MessageId ?? "invalid";
       const group = groups.get(groupId) ?? [];
       group.push(message);
@@ -79,9 +80,9 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
             for (const message of pending[index] ?? []) {
               if (this.stopping || this.databaseUnavailable || blocked) {
                 await this.release(message);
+                this.outstanding.delete(message);
                 continue;
               }
-              this.active.add(message);
               try {
                 blocked = !(await this.process(message));
               } catch {
@@ -92,7 +93,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
                   instanceId: this.instanceId,
                 });
               } finally {
-                this.active.delete(message);
+                this.outstanding.delete(message);
               }
             }
           }
@@ -114,7 +115,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
         result = await this.submit.handle(
           { ...envelope.data, correlationId: messageId, causationId: messageId },
           {
-            inbox: { messageId, payloadHash: canonicalHash(envelope) },
+            inbox: { messageId, payloadHash: canonicalHash(envelope.data) },
             sync: context,
           },
         );
@@ -204,7 +205,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
     timeout.abort();
     if (result === "expired") {
       this.drainExpired = true;
-      await Promise.all([...this.active].map((message) => this.release(message)));
+      await Promise.all([...this.outstanding].map((message) => this.release(message)));
     }
     this.transport.close();
     this.logger.info({
