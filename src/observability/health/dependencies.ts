@@ -23,7 +23,7 @@ export class Dependencies implements OnModuleDestroy {
     const config = configuration.values;
     this.sqs = new SQSClient({
       ...config.sqs,
-      credentials: { ...config.sqs.credentials },
+      ...(config.sqs.credentials ? { credentials: { ...config.sqs.credentials } } : {}),
       md5: false,
       maxAttempts: 1,
       useQueueUrlAsEndpoint: false,

@@ -1,4 +1,5 @@
 import type { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { Migrator } from "@mikro-orm/migrations";
 import { defineConfig } from "@mikro-orm/postgresql";
 import { Migration202610310001 } from "./database/migrations/Migration202610310001";
@@ -33,8 +34,17 @@ function discardBrokenClients(pool: EventEmitter) {
 }
 
 export function databaseOptions(database: ReturnType<typeof parseConfiguration>["database"]) {
+  const { sslCaFile, ...connection } = database;
+  let ssl: { ca: string; rejectUnauthorized: true } | undefined;
+  if (sslCaFile) {
+    try {
+      ssl = { ca: readFileSync(sslCaFile, "utf8"), rejectUnauthorized: true };
+    } catch {
+      throw new Error("Cannot read DB_SSL_CA_FILE");
+    }
+  }
   return defineConfig({
-    ...database,
+    ...connection,
     entities: [WalletSchema, WagerTransactionSchema, LedgerSchema, InboxSchema, OutboxSchema],
     extensions: [Migrator],
     migrations: {
@@ -45,7 +55,7 @@ export function databaseOptions(database: ReturnType<typeof parseConfiguration>[
       emit: "ts",
     },
     pool: { min: 0, max: 10 },
-    driverOptions: { onPoolCreated: discardBrokenClients },
+    driverOptions: { onPoolCreated: discardBrokenClients, ...(ssl ? { ssl } : {}) },
     debug: false,
   });
 }

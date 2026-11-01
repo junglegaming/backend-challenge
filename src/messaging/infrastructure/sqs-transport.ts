@@ -28,7 +28,7 @@ export class SqsTransport {
     const config = configuration.values.sqs;
     this.client = new SQSClient({
       ...config,
-      credentials: { ...config.credentials },
+      ...(config.credentials ? { credentials: { ...config.credentials } } : {}),
       md5: false,
       maxAttempts: 1,
       useQueueUrlAsEndpoint: false,

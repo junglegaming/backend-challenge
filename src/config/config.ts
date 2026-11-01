@@ -21,6 +21,20 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
       throw new Error(`Invalid configuration: ${name}`);
     return +value;
   }
+  function flag(name: string, fallback: boolean): boolean {
+    const value = env[name];
+    if (value === undefined) return fallback;
+    if (value !== "true" && value !== "false") throw new Error(`Invalid configuration: ${name}`);
+    return value === "true";
+  }
+  function awsCredentials() {
+    const accessKeyId = env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = env.AWS_SECRET_ACCESS_KEY;
+    if (!accessKeyId?.trim() && !secretAccessKey?.trim()) return undefined;
+    if (!accessKeyId?.trim() || !secretAccessKey?.trim())
+      throw new Error("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together");
+    return Object.freeze({ accessKeyId, secretAccessKey });
+  }
   if (env.TEST_SYNC_POINTS && env.NODE_ENV !== "test")
     throw new Error("TEST_SYNC_POINTS requires NODE_ENV=test");
   const role = env.APP_ROLE ?? "api";
@@ -40,23 +54,26 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
   const outboxRetryMaxMs = integer("OUTBOX_RETRY_MAX_MS", 300_000, 86_400_000);
   if (outboxLeaseMs <= 2000 || outboxRetryMaxMs < outboxLeaseMs)
     throw new Error("Invalid configuration: outbox lease must exceed SQS timeout");
+  const credentials = awsCredentials();
+  const sslCaFile = env.DB_SSL_CA_FILE;
+  if (sslCaFile !== undefined && !sslCaFile.trim())
+    throw new Error("Invalid configuration: DB_SSL_CA_FILE");
   return Object.freeze({
     role: role as AppRole,
     port: port("PORT", "3000"),
+    bootstrapCreateQueues: flag("BOOTSTRAP_CREATE_QUEUES", true),
     database: Object.freeze({
       host: required("DB_HOST"),
       port: port("DB_PORT", "5432"),
       dbName: required("DB_NAME"),
       user: required("DB_USER"),
       password: required("DB_PASSWORD"),
+      ...(sslCaFile === undefined ? {} : { sslCaFile }),
     }),
     sqs: Object.freeze({
       endpoint: url("SQS_ENDPOINT"),
       region: required("AWS_REGION"),
-      credentials: Object.freeze({
-        accessKeyId: required("AWS_ACCESS_KEY_ID"),
-        secretAccessKey: required("AWS_SECRET_ACCESS_KEY"),
-      }),
+      ...(credentials ? { credentials } : {}),
     }),
     auth: Object.freeze({ issuer: url("AUTH_ISSUER"), jwksUrl: url("AUTH_JWKS_URL") }),
     outbox: Object.freeze({ leaseMs: outboxLeaseMs, retryMaxMs: outboxRetryMaxMs }),
