@@ -378,6 +378,9 @@ try {
       "--cpu-load",
       "80",
       "--metrics-brief",
+      // The checkout is read-only; stress-ng validates its temporary directory.
+      "--temp-path",
+      "/tmp",
     ];
     const stress = Bun.spawn(args, { env: env(), stdout: "pipe", stderr: "pipe" });
     let ready = false;
