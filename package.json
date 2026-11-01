@@ -1,0 +1,46 @@
+{
+  "name": "jungle-wagering-processor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.3",
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run lint && bun run typecheck && bun run test:unit",
+    "test": "bun run test:unit && bun run test:integration && bun run test:concurrency",
+    "test:unit": "bun test test/unit",
+    "test:integration": "bun scripts/with-stack.ts integration",
+    "test:concurrency": "bun scripts/with-stack.ts concurrency",
+    "test:failure": "bun scripts/with-stack.ts failure",
+    "test:load": "bun scripts/load-test.ts",
+    "stack:up": "bun scripts/with-stack.ts up",
+    "stack:down": "bun scripts/with-stack.ts down",
+    "migration:up": "bun src/cli/migration.ts up",
+    "migration:down": "bun src/cli/migration.ts down",
+    "dlq:redrive": "bun src/cli/dlq-redrive.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "3.1161.0",
+    "@mikro-orm/core": "7.2.5",
+    "@mikro-orm/migrations": "7.2.5",
+    "@mikro-orm/nestjs": "7.1.0",
+    "@mikro-orm/postgresql": "7.2.5",
+    "@nestjs/common": "12.3.2",
+    "@nestjs/core": "12.3.2",
+    "@nestjs/platform-fastify": "12.3.2",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.15.1",
+    "jose": "6.2.14",
+    "pino": "10.4.0",
+    "prom-client": "15.1.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@types/bun": "1.4.4",
+    "typescript": "7.0.2"
+  }
+}

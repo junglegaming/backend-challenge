@@ -1,0 +1,125 @@
+name: wagering
+
+x-app: &app
+  image: wagering-app:${APP_IMAGE_TAG:-local}
+  build: .
+  init: true
+  stop_grace_period: 45s
+  environment: &app-environment
+    TZ: UTC
+    NODE_ENV: ${NODE_ENV:-development}
+    PORT: "3000"
+    DB_HOST: ${APP_DB_HOST:-postgres}
+    DB_PORT: ${APP_DB_PORT:-5432}
+    DB_NAME: wagering
+    DB_USER: wagering
+    DB_PASSWORD: ${POSTGRES_PASSWORD:-local-wagering-only}
+    SQS_ENDPOINT: ${APP_SQS_ENDPOINT:-http://ministack:4566}
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: local
+    AWS_SECRET_ACCESS_KEY: local
+  depends_on:
+    bootstrap:
+      condition: service_completed_successfully
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "bun",
+        "-e",
+        "const r=await fetch('http://127.0.0.1:3000/health/ready');process.exit(r.ok?0:1)",
+      ]
+    interval: 3s
+    timeout: 5s
+    retries: 30
+    start_period: 10s
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    init: true
+    stop_grace_period: 30s
+    environment:
+      TZ: UTC
+      POSTGRES_DB: wagering
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-wagering-only}
+    command:
+      ["postgres", "-c", "max_connections=200", "-c", "idle_in_transaction_session_timeout=10s"]
+    ports: ["${POSTGRES_HOST_PORT:-5432}:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  ministack:
+    image: ministackorg/ministack:1.5.28
+    init: true
+    stop_grace_period: 30s
+    environment:
+      TZ: UTC
+      PERSIST_STATE: "1"
+      STATE_DIR: /data/ministack-state
+    ports: ["${SQS_HOST_PORT:-4566}:4566"]
+    volumes: ["ministack-data:/data"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health', timeout=2)",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  bootstrap:
+    <<: *app
+    command: ["bun", "src/cli/bootstrap.ts"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ministack:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-environment
+      APP_ROLE: api
+
+  consumer:
+    <<: *app
+    environment:
+      <<: *app-environment
+      APP_ROLE: consumer
+
+  worker:
+    <<: *app
+    environment:
+      <<: *app-environment
+      APP_ROLE: worker
+
+  nginx:
+    image: nginx:1.31.8-alpine
+    init: true
+    stop_grace_period: 45s
+    ports: ["${API_HOST_PORT:-3000}:3000"]
+    volumes: ["./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres-data:
+  ministack-data:

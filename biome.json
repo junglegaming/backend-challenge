@@ -1,0 +1,10 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+  "files": { "includes": ["**/*.ts", "**/*.json", "!load/results", "!coverage"] },
+  "formatter": { "indentStyle": "space", "lineWidth": 100 },
+  "linter": {
+    "enabled": true,
+    "rules": { "preset": "recommended", "style": { "useImportType": "off" } }
+  },
+  "javascript": { "formatter": { "quoteStyle": "double" } }
+}
