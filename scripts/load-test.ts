@@ -3,6 +3,11 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { LoadFixtures, loadCommand, parallelEach, Workload } from "../load/model";
 import { instant, phaseMetrics } from "../load/prometheus";
+import {
+  assertResponseOutcome,
+  parseResponseEvidence,
+  responseKey,
+} from "../load/response-evidence";
 import { produceBacklog } from "../load/sqs-producer";
 import { parseConfiguration } from "../src/config/config";
 import { SqsTransport } from "../src/messaging/infrastructure/sqs-transport";
@@ -271,8 +276,10 @@ try {
     "scripts/load-test.ts",
     "load/model.ts",
     "load/prometheus.ts",
+    "load/response-evidence.ts",
     "load/sqs-producer.ts",
     "load/verification.test.ts",
+    "load/verification-query.ts",
     "load/k6/wagering.js",
     "docker/nginx/nginx.conf",
   ])
@@ -331,14 +338,55 @@ try {
     console.log(`Load phase: ${phase}`);
     const phaseStart = Date.now();
     const countersBefore = await snapshot();
-    const output = await dc(["run", "--rm", "--no-deps", "k6", "run", "/load/k6/wagering.js"], {
-      LOAD_PHASE: phase,
-    });
+    const output = await dc(
+      [
+        "run",
+        "--rm",
+        "--no-deps",
+        "k6",
+        "run",
+        "--log-format",
+        "raw",
+        "--console-output",
+        `/results/${phase}-responses.jsonl`,
+        "/load/k6/wagering.js",
+      ],
+      { LOAD_PHASE: phase },
+    );
     const phaseEnd = Date.now();
     await Bun.write(`${runDir}/${phase}.txt`, output);
     // A successful k6 process alone does not prove handleSummary wrote a usable result.
     const summary = (await Bun.file(`${runDir}/${phase}.json`).json()) as K6Summary;
     validateSummary(summary, phase);
+    const responses = parseResponseEvidence(
+      await Bun.file(`${runDir}/${phase}-responses.jsonl`).text(),
+    );
+    for (const kind of ["hot", "distributed", "replay"]) {
+      const evidence = [...responses.values()].filter((row) => row.workload === kind);
+      if (
+        evidence.length !== count(summary, `requests_${kind}`) ||
+        evidence.filter((row) => row.status === 200).length !==
+          count(summary, `committed_${kind}`) ||
+        evidence.filter((row) => row.status === 503).length !==
+          count(summary, `backpressure_${kind}`)
+      )
+        throw new Error("HTTP identity evidence differs from response counters");
+    }
+    if (phase === "replays") {
+      const attempts = count(summary, "requests_distributed") + count(summary, "requests_replay");
+      for (let index = 9; index < attempts; index += 10) {
+        const key = responseKey("replay", index);
+        const response = responses.get(key);
+        const fixture = fixtures.replays[Math.floor(index / 10) % fixtures.replays.length];
+        if (
+          !response ||
+          !fixture ||
+          (response.status === 200 && response.transactionId !== fixture.transactionId)
+        )
+          throw new Error("Replay identity evidence differs from its seed");
+        responses.delete(key);
+      }
+    }
     const workloads: Workload[] =
       phase === "hot_wallet"
         ? ["hot"]
@@ -357,6 +405,7 @@ try {
         .map((index) => loadCommand(fixtures, phase, workload, index));
       const rows = await connection.execute<
         {
+          id: string;
           external_transaction_id: string;
           idempotency_key: string;
           wallet_id: string;
@@ -366,7 +415,7 @@ try {
           amount: string;
         }[]
       >(
-        "SELECT external_transaction_id,idempotency_key,wallet_id,player_id,kind,status,amount::text FROM wager_transactions WHERE external_transaction_id LIKE ?",
+        "SELECT id,external_transaction_id,idempotency_key,wallet_id,player_id,kind,status,amount::text FROM wager_transactions WHERE external_transaction_id LIKE ?",
         [`${runId}:${phase}:${workload}:%`],
       );
       const byKey = new Map(rows.map((row) => [row.external_transaction_id, row]));
@@ -375,6 +424,10 @@ try {
       const missing: typeof expected = [];
       for (const command of expected) {
         const row = byKey.get(command.key);
+        const index = Number(command.key.slice(command.key.lastIndexOf(":") + 1));
+        const evidenceKey = responseKey(workload, index);
+        assertResponseOutcome(responses.get(evidenceKey), row?.id);
+        responses.delete(evidenceKey);
         if (!row) {
           missing.push(command);
           continue;
@@ -396,10 +449,17 @@ try {
         const result = await request("/wagering/transactions", command.body, false, command.key);
         if (result.status !== "PROCESSED" || result.idempotentReplay)
           throw new Error("Backpressure recovery diverged");
+        const [row] = await connection.execute<{ id: string }[]>(
+          "SELECT id FROM wager_transactions WHERE provider_id = 'provider-a' AND external_transaction_id = ?",
+          [command.key],
+        );
+        if (!row || result.transactionId !== row.id)
+          throw new Error("Recovery response differs from its durable transaction");
       });
       recovered += missing.length;
       phaseUnique += expected.length;
     }
+    if (responses.size) throw new Error("Unexpected HTTP identity evidence remains");
     uniqueCommands += phaseUnique;
     const recoveryMs = Date.now() - recoveryStart;
     const outboxDrainMs = await drain();

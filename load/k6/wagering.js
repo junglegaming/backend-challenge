@@ -71,12 +71,15 @@ function submit(workload, data) {
   });
   metric.duration.add(response.timings.duration);
   let valid = false;
+  let transactionId = null;
   if (response.status === 200) {
     try {
       const body = response.json();
       valid = body.status === "PROCESSED" && body.idempotentReplay === replay
         && typeof body.transactionId === "string"
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.transactionId)
         && (!replay || body.transactionId === replayFixture.transactionId);
+      if (valid) transactionId = body.transactionId;
     } catch (_) { /* Count malformed responses without logging payloads or headers. */ }
     metric.committed.add(1);
   } else if (response.status === 503) {
@@ -85,6 +88,9 @@ function submit(workload, data) {
   }
   unexpected.add(!valid);
   check(null, { "submission matches the expected contract": () => valid });
+  console.log(JSON.stringify({
+    workload: replay ? "replay" : workload, index, status: response.status, transactionId,
+  }));
 }
 export function hot(data) { submit("hot", data); }
 export function distributed(data) { submit("distributed", data); }

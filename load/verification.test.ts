@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { assertLedgerInvariant } from "../test/support/database";
 import { wageringHarness } from "../test/support/wagering";
 import { LoadFixtures, parallelEach } from "./model";
+import { invalidLoadEventsSql } from "./verification-query";
 
 const runDir = process.env.LOAD_RUN_DIR;
 if (!runDir || process.env.WAGERING_STACK_MANAGED !== "1") throw new Error("Use bun run test:load");
@@ -63,13 +64,7 @@ test("all load commands have one financial effect, atomic events, processed inbo
     expect(counts.unfinished_inbox).toBe(0);
     expect(counts.duplicate_effects).toBe(0);
   }
-  const [invalidEvents] = await connection.execute<{ count: number }[]>(`
-    SELECT count(*)::int AS count FROM wager_transactions t LEFT JOIN
-      (SELECT payload->'data'->>'transactionId' AS transaction_id, count(*) AS events,
-        count(DISTINCT event_type) AS event_types
-       FROM outbox_messages GROUP BY payload->'data'->>'transactionId') e
-      ON e.transaction_id = t.id::text WHERE e.events IS DISTINCT FROM 2::bigint
-        OR e.event_types IS DISTINCT FROM 2::bigint`);
+  const [invalidEvents] = await connection.execute<{ count: number }[]>(invalidLoadEventsSql);
   expect(invalidEvents?.count).toBe(0);
   const wallets = await connection.execute<{ id: string }[]>("SELECT id FROM wallets");
   if (fixtures)
