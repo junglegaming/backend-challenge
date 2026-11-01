@@ -206,18 +206,22 @@ export class WagerTransaction {
     this.state.observedBalance = balance;
   }
 
-  markPendingReference(at: Date, balance: Money, ttlMs = 86_400_000): void {
+  markPendingReference(at: Date, balance: Money, ttlMs = 86_400_000, retryJitter = 0): void {
     this.assertMutable();
     this.state.status = WagerTransactionStatus.PendingReference;
     this.state.observedBalance = balance;
     this.state.referenceDeadlineAt ??= new Date(at.getTime() + ttlMs);
-    this.scheduleReferenceRetry(at);
+    this.scheduleReferenceRetry(at, 5000, 300_000, retryJitter);
   }
 
-  scheduleReferenceRetry(at: Date, baseMs = 5000, maxMs = 300_000): void {
+  scheduleReferenceRetry(at: Date, baseMs = 5000, maxMs = 300_000, jitter = 0): void {
     this.assertMutable();
     this.state.nextAttemptAt = new Date(
-      at.getTime() + Math.min(maxMs, baseMs * 2 ** Math.min(this.referenceAttempts, 30)),
+      at.getTime() +
+        Math.min(
+          maxMs,
+          Math.floor(baseMs * 2 ** Math.min(this.referenceAttempts, 30) * (1 + jitter)),
+        ),
     );
     this.state.referenceAttempts += 1;
   }

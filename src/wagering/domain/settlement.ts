@@ -16,6 +16,7 @@ export interface SettlementInput {
   deadlineReached: boolean;
   now: Date;
   referenceTtlMs?: number;
+  referenceRetryJitter?: number;
 }
 export type SettlementOutcome =
   | { type: "processed"; ledgerEntry?: WalletLedgerEntry }
@@ -40,7 +41,7 @@ export function settle(input: SettlementInput): SettlementOutcome {
   }
   const pending = (expiredCode: FailureCode): SettlementOutcome => {
     if (input.deadlineReached) return reject(expiredCode);
-    tx.markPendingReference(now, wallet.balance, input.referenceTtlMs);
+    tx.markPendingReference(now, wallet.balance, input.referenceTtlMs, input.referenceRetryJitter);
     return { type: "pending" };
   };
   if (tx.referenceExternalTransactionId !== undefined) {

@@ -1,4 +1,5 @@
 import { TransactionContext } from "../../../shared/application/unit-of-work";
+import { Money } from "../../../shared/domain/money";
 import { WagerTransaction } from "../../domain/wager-transaction";
 import { Wallet } from "../../domain/wallet";
 import { WalletLedgerEntry } from "../../domain/wallet-ledger-entry";
@@ -35,4 +36,11 @@ export abstract class LedgerRepository {
     afterVersion?: number,
     limit?: number,
   ): Promise<WalletLedgerEntry[]>;
+}
+
+export abstract class ReconciliationRepository {
+  abstract snapshot(
+    tx: TransactionContext,
+    walletId: string,
+  ): Promise<{ storedBalance: Money; calculatedBalance: Money; checkedEntries: number } | null>;
 }
