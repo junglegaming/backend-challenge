@@ -1,0 +1,14 @@
+title = "Wagering secret detection"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact public Compose development defaults"
+regexTarget = "secret"
+regexes = [
+  '''^local-dev-only-provider-a$''',
+  '''^local-dev-only-provider-b$''',
+  '''^local-dev-only-platform-operator$''',
+  '''^local-wagering-only$''',
+]

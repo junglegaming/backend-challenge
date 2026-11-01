@@ -1,5 +1,21 @@
 # Technical Challenge — Distributed Wagering Processor
 
+## Prevenção de vazamentos
+
+Para examinar todo o histórico sem instalar Gitleaks, execute na raiz do clone:
+
+```bash
+docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
+  -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+  ghcr.io/gitleaks/gitleaks:v8.30.1 git . --log-opts=--all --redact --no-banner
+```
+
+Troque `git . --log-opts=--all` por `dir .` para examinar a árvore atual. A configuração estende as regras padrão
+e permite apenas quatro valores públicos exatos usados no Compose local. O CI examina todo o
+histórico. Quem já tem Lefthook e Gitleaks pode executar `lefthook install` para ativar a inspeção
+das mudanças staged antes de cada commit. Esses utilitários não são dependências dos testes.
+Arquivos de ignore evitam inclusão acidental; não controlam o acesso de agentes ao filesystem.
+
 ## Bem-vindo à Jungle Gaming 🦧
 
 A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.

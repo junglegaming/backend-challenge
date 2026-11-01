@@ -9,3 +9,11 @@ coverage
 **/.env.*
 load/results
 *.log
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.pem
+*.key
+crash.log
+.aws/
