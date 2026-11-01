@@ -4,6 +4,7 @@ import {
   SqlOutboxRepository,
 } from "../../src/messaging/infrastructure/repositories";
 import { WageringTelemetry } from "../../src/observability/wagering-telemetry";
+import { NoopSyncPoint } from "../../src/shared/application/sync-point";
 import { OpenWallet } from "../../src/wagering/application/open-wallet";
 import { ReconcileWallet, WageringQueries } from "../../src/wagering/application/queries";
 import { ResolvePendingTransaction } from "../../src/wagering/application/resolve-pending-transaction";
@@ -22,7 +23,7 @@ import {
 import { testDatabase } from "./database";
 
 export function wageringHarness() {
-  const { database, uow } = testDatabase();
+  const { database, uow, values } = testDatabase();
   const wallets = new SqlWalletRepository();
   const transactions = new SqlWagerTransactionRepository();
   const ledger = new SqlLedgerRepository();
@@ -32,6 +33,7 @@ export function wageringHarness() {
   const settlement = new SettlementWriter(wallets, transactions, ledger, outbox);
   return {
     database,
+    values,
     uow,
     wallets,
     transactions,
@@ -40,7 +42,15 @@ export function wageringHarness() {
     inbox,
     telemetry,
     settlement,
-    submit: new SubmitWagerTransaction(uow, wallets, transactions, inbox, settlement, telemetry),
+    submit: new SubmitWagerTransaction(
+      uow,
+      wallets,
+      transactions,
+      inbox,
+      settlement,
+      telemetry,
+      new NoopSyncPoint(),
+    ),
     open: new OpenWallet(uow, wallets, transactions, ledger, outbox),
     resolve: new ResolvePendingTransaction(uow, wallets, transactions, settlement, telemetry),
     queries: new WageringQueries(uow, wallets, transactions, ledger),

@@ -2,6 +2,10 @@ export const testProject = "wagering-test";
 export const testEnvironment = {
   ...process.env,
   NODE_ENV: "test",
+  SQS_WAIT_SECONDS: "1",
+  SQS_VISIBILITY_SECONDS: "5",
+  SQS_RETRY_BASE_SECONDS: "1",
+  SQS_RETRY_MAX_SECONDS: "1",
   APP_IMAGE_TAG: "test",
   API_HOST_PORT: "13000",
   POSTGRES_HOST_PORT: "15432",

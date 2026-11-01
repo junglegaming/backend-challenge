@@ -15,6 +15,23 @@ const configuration = {
 };
 
 describe("startup configuration", () => {
+  test("test crash barriers cannot be enabled outside the test environment", () => {
+    expect(() =>
+      parseConfiguration({
+        ...configuration,
+        NODE_ENV: "production",
+        TEST_SYNC_POINTS: "consumer.before_commit",
+      }),
+    ).toThrow("TEST_SYNC_POINTS requires NODE_ENV=test");
+    expect(
+      parseConfiguration({
+        ...configuration,
+        NODE_ENV: "test",
+        TEST_SYNC_POINTS: "consumer.before_commit",
+        TEST_SYNC_MATCH: "message",
+      }).sync.points,
+    ).toEqual(["consumer.before_commit"]);
+  });
   test("parses role and numeric ports without implicit environment defaults for dependencies", () => {
     const result = parseConfiguration({ ...configuration, APP_ROLE: "worker", DB_PORT: "5433" });
     expect(result.role).toBe("worker");
