@@ -6,25 +6,34 @@ import { WageringTelemetry } from "./wagering-telemetry";
 
 @Injectable()
 export class MetricSampler implements OnModuleInit, OnModuleDestroy {
-  private readonly loop: PollingLoop;
+  private readonly loops: PollingLoop[];
   constructor(
     private readonly database: Database,
     private readonly dependencies: Dependencies,
     private readonly telemetry: WageringTelemetry,
   ) {
-    this.loop = new PollingLoop(
-      async (signal) => {
-        await this.sample();
-        await pause(1000, signal);
-      },
-      () => telemetry.logger.warning({ event: "metric_sample_failed" }),
-    );
+    const loop = (work: () => Promise<void>, reason: string) =>
+      new PollingLoop(
+        async (signal) => {
+          await work();
+          await pause(1000, signal);
+        },
+        () => telemetry.logger.warning({ event: "metric_sample_failed", reason }),
+      );
+    // Each dependency retains its in-flight work until it settles. A stalled SQL
+    // query neither overlaps with another SQL sample nor freezes healthy queues.
+    this.loops = [
+      loop(() => this.sampleDatabase(), "database"),
+      loop(() => this.sampleQueues(), "queues"),
+    ];
   }
   onModuleInit(): void {
-    this.loop.start();
+    for (const loop of this.loops) loop.start();
   }
   async sample(): Promise<void> {
-    await Promise.all([this.sampleDatabase(), this.sampleQueues()]);
+    const results = await Promise.allSettled([this.sampleDatabase(), this.sampleQueues()]);
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("Metric sample failed");
   }
   private async sampleDatabase() {
     const orm = await this.database.orm;
@@ -37,7 +46,7 @@ export class MetricSampler implements OnModuleInit, OnModuleDestroy {
     this.telemetry.pending.set(row.pending);
   }
   private async sampleQueues() {
-    await Promise.all(
+    const results = await Promise.allSettled(
       Object.entries(QUEUES).map(async ([queue, name]) => {
         const attrs = await this.dependencies.queueAttributes(name);
         for (const [state, attr] of Object.entries({
@@ -50,8 +59,14 @@ export class MetricSampler implements OnModuleInit, OnModuleDestroy {
         }
       }),
     );
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("Queue sample failed");
   }
   async onModuleDestroy(): Promise<void> {
-    await this.loop.stopWithin(2500);
+    const results = await Promise.all(this.loops.map((loop) => loop.stopWithin(2500)));
+    this.telemetry.logger.info({
+      event: "metric_sampler_stopped",
+      drained: results.every(Boolean),
+    });
   }
 }
