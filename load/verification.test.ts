@@ -1,7 +1,9 @@
 import { afterAll, expect, test } from "bun:test";
 import { assertLedgerInvariant } from "../test/support/database";
 import { wageringHarness } from "../test/support/wagering";
+import { completeEventCoverage, eventCoverage } from "./event-verification";
 import { LoadFixtures, parallelEach } from "./model";
+import { remoteFixture } from "./target";
 import { invalidLoadEventsSql } from "./verification-query";
 
 const runDir = process.env.LOAD_RUN_DIR;
@@ -13,7 +15,8 @@ const fixtures: LoadFixtures | undefined = partial
 const expected: { transactions: number; sqs: number } | undefined = partial
   ? undefined
   : await Bun.file(`${runDir}/expected.json`).json();
-const h = wageringHarness();
+const remote = process.env.LOAD_TARGET === "remote";
+const h = remote ? wageringHarness(remoteFixture(process.env)) : wageringHarness();
 afterAll(async () => {
   try {
     await assertLedgerInvariant(h.database);
@@ -46,6 +49,33 @@ test("all load commands have one financial effect, atomic events, processed inbo
     (SELECT count(*)::int FROM (SELECT transaction_id FROM wallet_ledger_entries
       GROUP BY transaction_id HAVING count(*) <> 1) duplicates) AS duplicate_effects`);
   if (!counts) throw new Error("Missing load financial counts");
+  let remoteInboxes:
+    | { total: number; requests: number; events: number; unknown: number }
+    | undefined;
+  if (remote) {
+    const consumer = process.env.LOAD_EVENT_CONSUMER;
+    if (!consumer) throw new Error("Missing event consumer identity");
+    const [inbox] = await connection.execute<
+      { requests: number; events: number; unknown: number }[]
+    >(
+      `SELECT count(*) FILTER (WHERE consumer_name = 'wager-transactions-processor')::int AS requests,
+       count(*) FILTER (WHERE consumer_name = ?)::int AS events,
+       count(*) FILTER (WHERE consumer_name NOT IN ('wager-transactions-processor', ?))::int AS unknown
+       FROM inbox_messages`,
+      [consumer, consumer],
+    );
+    expect(inbox?.unknown).toBe(0);
+    expect(counts.inbox).toBe((inbox?.requests ?? 0) + (inbox?.events ?? 0));
+    if (inbox) remoteInboxes = { total: counts.inbox, ...inbox };
+    const coverage = await eventCoverage(connection, consumer);
+    if (!partial) expect(completeEventCoverage(coverage)).toBe(true);
+    else {
+      expect(coverage.extra).toBe(0);
+      expect(coverage.invalid_inbox).toBe(0);
+    }
+    // Preserve the original exact request-inbox assertion independently of the observer.
+    counts.inbox = inbox?.requests ?? -1;
+  }
   if (expected) {
     expect(counts).toEqual({
       transactions: expected.transactions,
@@ -87,6 +117,7 @@ test("all load commands have one financial effect, atomic events, processed inbo
         passed: true,
         wallets: wallets.length,
         ...counts,
+        ...(remoteInboxes ? { remoteInboxes } : {}),
       },
       null,
       2,

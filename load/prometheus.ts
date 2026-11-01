@@ -3,7 +3,7 @@ export interface PromSeries {
   values: [number, string][];
 }
 
-const endpoint = "http://127.0.0.1:19090/api/v1";
+const endpoint = `${process.env.LOAD_TARGET === "remote" ? process.env.LOAD_PROMETHEUS_URL : "http://127.0.0.1:19090"}/api/v1`;
 export const healthyScrapeTimestamps =
   'timestamp(up{job="wagering"}) and (up{job="wagering"} == 1)';
 async function query(path: string, parameters: Record<string, string>) {

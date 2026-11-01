@@ -1,28 +1,100 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { LoadEventObserver } from "../load/event-observer";
+import { completeEventCoverage, eventCoverage } from "../load/event-verification";
 import { LoadFixtures, loadCommand, parallelEach, Workload } from "../load/model";
 import { healthyScrapeTimestamps, instant, phaseMetrics } from "../load/prometheus";
+import { remoteSampler } from "../load/remote-sampler";
 import {
   assertResponseOutcome,
   parseResponseEvidence,
   responseKey,
 } from "../load/response-evidence";
 import { produceBacklog } from "../load/sqs-producer";
+import { loadTarget, plateauPhases, remoteTokens, verifyLoadManifest } from "../load/target";
 import { parseConfiguration } from "../src/config/config";
 import { SqsTransport } from "../src/messaging/infrastructure/sqs-transport";
 import { Dependencies, QUEUES } from "../src/observability/health/dependencies";
 import { Database } from "../src/shared/infrastructure/database";
-import { apiUrl, command, compose, pollUntil, testEnvironment } from "../test/support/stack";
+import { MikroOrmUnitOfWork } from "../src/shared/infrastructure/unit-of-work";
+import {
+  apiUrl,
+  command,
+  compose,
+  pollUntil as stackPollUntil,
+  testEnvironment,
+} from "../test/support/stack";
 import { accessToken } from "../test/support/tokens";
 
 const profile = process.env.LOAD_PROFILE ?? "quick";
 if (profile !== "quick" && profile !== "full")
   throw new Error("LOAD_PROFILE must be quick or full");
 const runId = `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+const target = loadTarget(process.env);
+const cancellation = new AbortController();
+const cancel = () => cancellation.abort(new Error("Remote load stopped at its runtime guardrail"));
+if (target.remote) process.on("SIGTERM", cancel);
+function checkCancellation() {
+  cancellation.signal.throwIfAborted();
+}
+async function pollUntil<T>(
+  description: string,
+  probe: () => Promise<T | undefined | false>,
+  timeoutMs: number,
+  intervalMs: number,
+) {
+  return stackPollUntil(
+    description,
+    async () => {
+      checkCancellation();
+      const result = await probe();
+      checkCancellation();
+      return result;
+    },
+    timeoutMs,
+    intervalMs,
+  );
+}
+async function remoteK6(args: string[], env: NodeJS.ProcessEnv) {
+  checkCancellation();
+  const name = `wagering-load-k6-${runId}`;
+  const id = (await command(["docker", "create", "--name", name, ...args], env)).trim();
+  let stopping: Promise<unknown> | undefined;
+  const stop = () => {
+    stopping ??= command(["docker", "kill", "--signal", "SIGTERM", id], env).catch(() => undefined);
+  };
+  cancellation.signal.addEventListener("abort", stop, { once: true });
+  try {
+    checkCancellation();
+    const child = Bun.spawn(["docker", "start", "--attach", id], {
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (cancellation.signal.aborted) stop();
+    const [output, , code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    checkCancellation();
+    const containerExit = Number(
+      (await command(["docker", "inspect", "--format", "{{.State.ExitCode}}", id], env)).trim(),
+    );
+    if (code !== 0 || containerExit !== 0)
+      throw new Error(`Remote k6 failed (${code}/${containerExit})`);
+    return output;
+  } finally {
+    cancellation.signal.removeEventListener("abort", stop);
+    await stopping;
+    // Removing a Docker client alone does not remove its container. This identity belongs only to this run.
+    await command(["docker", "rm", "-f", id], env);
+  }
+}
 const runDir = resolve("load/results", runId);
 await mkdir(runDir, { recursive: true });
-const environment = {
+const localEnvironment = {
   ...testEnvironment,
   NODE_ENV: "production",
   COMPOSE_PROFILES: "observability,load",
@@ -47,39 +119,50 @@ const environment = {
   LOAD_UID: String(process.getuid?.() ?? 12345),
   LOAD_GID: String(process.getgid?.() ?? 12345),
 };
+const environment = target.remote
+  ? { ...process.env, LOAD_EVENT_CONSUMER: `load-events:${runId}` }
+  : localEnvironment;
 const dc = (args: string[], extra = {}) =>
-  compose(args, "wagering-test", { ...environment, ...extra });
-if ((await dc(["ps", "-aq"])).trim())
+  target.remote
+    ? Promise.reject(new Error("Compose is forbidden for the remote load target"))
+    : compose(args, "wagering-test", { ...environment, ...extra });
+if (!target.remote && (await dc(["ps", "-aq"])).trim())
   throw new Error("wagering-test already exists; refusing to replace its services");
 
-const values = parseConfiguration({
-  ...environment,
-  DB_HOST: "127.0.0.1",
-  DB_PORT: "15432",
-  DB_NAME: "wagering",
-  DB_USER: "wagering",
-  DB_PASSWORD: process.env.POSTGRES_PASSWORD ?? "local-wagering-only",
-  SQS_ENDPOINT: "http://127.0.0.1:14566",
-  AWS_REGION: "us-east-1",
-  AWS_ACCESS_KEY_ID: "local",
-  AWS_SECRET_ACCESS_KEY: "local",
-  AUTH_ISSUER: "http://keycloak:8080/realms/wagering",
-  AUTH_JWKS_URL: "http://127.0.0.1:18080/realms/wagering/protocol/openid-connect/certs",
-});
+const values = target.remote
+  ? target.values
+  : parseConfiguration({
+      ...environment,
+      DB_HOST: "127.0.0.1",
+      DB_PORT: "15432",
+      DB_NAME: "wagering",
+      DB_USER: "wagering",
+      DB_PASSWORD: process.env.POSTGRES_PASSWORD ?? "local-wagering-only",
+      SQS_ENDPOINT: "http://127.0.0.1:14566",
+      AWS_REGION: "us-east-1",
+      AWS_ACCESS_KEY_ID: "local",
+      AWS_SECRET_ACCESS_KEY: "local",
+      AUTH_ISSUER: "http://keycloak:8080/realms/wagering",
+      AUTH_JWKS_URL: "http://127.0.0.1:18080/realms/wagering/protocol/openid-connect/certs",
+    });
 let database: Database | undefined;
 let transport: SqsTransport | undefined;
 let dependencies: Dependencies | undefined;
+let observer: LoadEventObserver | undefined;
+let stopSampler: ReturnType<typeof remoteSampler> | undefined;
+const token = target.remote ? remoteTokens(target.tokenUrl, environment) : accessToken;
 const write = (name: string, data: unknown) =>
   Bun.write(`${runDir}/${name}.json`, JSON.stringify(data, null, 2));
 const startedAt = Date.now();
 console.log(`Load ${profile}: ${runId}`);
 
 async function request(path: string, body: unknown, operator = false, key?: string) {
-  const response = await fetch(`${apiUrl}${path}`, {
+  checkCancellation();
+  const response = await fetch(`${target.remote ? target.apiUrl : apiUrl}${path}`, {
     method: "POST",
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.any([AbortSignal.timeout(20_000), cancellation.signal]),
     headers: {
-      Authorization: `Bearer ${await accessToken(operator ? "platform-operator" : "provider-a")}`,
+      Authorization: `Bearer ${await token(operator ? "platform-operator" : "provider-a")}`,
       "Content-Type": "application/json",
       ...(key ? { "Idempotency-Key": key } : {}),
     },
@@ -156,25 +239,27 @@ async function verifyFinancialState(partial = false) {
 }
 
 try {
-  await dc([
-    "up",
-    "-d",
-    "--build",
-    "--wait",
-    "--wait-timeout",
-    "180",
-    "--scale",
-    "api=3",
-    "--scale",
-    "consumer=3",
-    "--scale",
-    "worker=2",
-    "nginx",
-    "consumer",
-    "worker",
-    "prometheus",
-    "grafana",
-  ]);
+  if (target.remote) await verifyLoadManifest(target.manifest, target.commit);
+  if (!target.remote)
+    await dc([
+      "up",
+      "-d",
+      "--build",
+      "--wait",
+      "--wait-timeout",
+      "180",
+      "--scale",
+      "api=3",
+      "--scale",
+      "consumer=3",
+      "--scale",
+      "worker=2",
+      "nginx",
+      "consumer",
+      "worker",
+      "prometheus",
+      "grafana",
+    ]);
   database = new Database({ values });
   transport = new SqsTransport({ values });
   dependencies = new Dependencies({ values }, database);
@@ -184,6 +269,23 @@ try {
     if (!row) throw new Error("Missing SQL count");
     return row.count;
   };
+  if (target.remote) {
+    const tables = [
+      "wallets",
+      "wager_transactions",
+      "wallet_ledger_entries",
+      "inbox_messages",
+      "outbox_messages",
+    ];
+    for (const table of tables)
+      if (await scalar(`SELECT count(*)::int AS count FROM ${table}`))
+        throw new Error("Remote load requires a fresh migrated database");
+    observer = new LoadEventObserver(
+      new MikroOrmUnitOfWork(database),
+      transport,
+      `load-events:${runId}`,
+    );
+  }
   const drain = async () => {
     const start = Date.now();
     await pollUntil(
@@ -202,6 +304,17 @@ try {
   const queueDepth = async (queue: string) => {
     if (!dependencies) throw new Error("Missing load dependency observer");
     const attributes = await dependencies.queueAttributes(queue);
+    if (
+      target.remote &&
+      (
+        [
+          "ApproximateNumberOfMessages",
+          "ApproximateNumberOfMessagesNotVisible",
+          "ApproximateNumberOfMessagesDelayed",
+        ] as const
+      ).some((key) => attributes[key] === undefined)
+    )
+      throw new Error("Missing queue depth attribute");
     return (
       [
         "ApproximateNumberOfMessages",
@@ -209,6 +322,35 @@ try {
         "ApproximateNumberOfMessagesDelayed",
       ] as const
     ).reduce((sum, key) => sum + Number(attributes[key] ?? 0), 0);
+  };
+  if (target.remote) {
+    for (const queue of Object.values(QUEUES))
+      if (await queueDepth(queue)) throw new Error("Remote load requires empty queues");
+    await observer?.start();
+    stopSampler = remoteSampler(connection, queueDepth);
+  }
+  const drainEvents = async () => {
+    if (!observer) return undefined;
+    const start = Date.now();
+    await pollUntil(
+      "exact events and completed acknowledgments",
+      async () => {
+        const state = observer?.snapshot();
+        const coverage = await eventCoverage(connection, `load-events:${runId}`);
+        return (
+          completeEventCoverage(coverage) &&
+          state?.activeHandlers === 0 &&
+          state.distinctAcknowledged === coverage.outbox
+        );
+      },
+      profile === "full" ? 1_800_000 : 180_000,
+      250,
+    );
+    return {
+      elapsedMs: Date.now() - start,
+      ...observer.snapshot(),
+      coverage: await eventCoverage(connection, `load-events:${runId}`),
+    };
   };
   const wallets: LoadFixtures["distributed"] = [];
   await parallelEach(
@@ -238,6 +380,7 @@ try {
   }
   await write("fixtures", fixtures);
   await drain();
+  await drainEvents();
   await pollUntil(
     "eight healthy Prometheus targets",
     async () => {
@@ -281,6 +424,10 @@ try {
     "load/verification.test.ts",
     "load/verification-query.ts",
     "load/k6/wagering.js",
+    "load/target.ts",
+    "load/event-observer.ts",
+    "load/event-verification.ts",
+    "load/remote-sampler.ts",
     "docker/nginx/nginx.conf",
   ])
     source.update(await Bun.file(path).arrayBuffer());
@@ -288,13 +435,23 @@ try {
     runId,
     profile,
     startedAt,
-    gitHead: Bun.which("git") ? (await command(["git", "rev-parse", "HEAD"])).trim() : null,
-    workingTreeDirty: Bun.which("git")
-      ? Boolean((await command(["git", "status", "--porcelain"])).trim())
-      : null,
-    appImageId: (
-      await command(["docker", "image", "inspect", "--format", "{{.Id}}", "wagering-app:load"])
-    ).trim(),
+    target: target.remote ? "remote" : "compose",
+    scenario: target.scenario,
+    gitHead: target.remote
+      ? target.commit
+      : Bun.which("git")
+        ? (await command(["git", "rev-parse", "HEAD"])).trim()
+        : null,
+    workingTreeDirty: target.remote
+      ? false
+      : Bun.which("git")
+        ? Boolean((await command(["git", "status", "--porcelain"])).trim())
+        : null,
+    appImageId: target.remote
+      ? process.env.LOAD_APP_IMAGE
+      : (
+          await command(["docker", "image", "inspect", "--format", "{{.Id}}", "wagering-app:load"])
+        ).trim(),
     loadSourceSha256: source.digest("hex"),
     bun: Bun.version,
     platform: process.platform,
@@ -307,7 +464,9 @@ try {
         '{"cpus":{{.NCPU}},"memoryBytes":{{.MemTotal}},"serverVersion":"{{.ServerVersion}}"}',
       ]),
     ),
-    images: (await dc(["config", "--images"])).trim().split("\n"),
+    images: target.remote
+      ? [process.env.LOAD_APP_IMAGE, target.image, process.env.LOAD_PROMETHEUS_IMAGE]
+      : (await dc(["config", "--images"])).trim().split("\n"),
     topology: { api: 3, consumer: 3, worker: 2 },
     operational: {
       visibilitySeconds: 30,
@@ -321,12 +480,23 @@ try {
       poolMaxPerProcess: 10,
       postgresMaxConnections: 200,
       lockTimeoutMs: 2000,
-      nginxWorkerConnections: 2048,
-      nginxNoFile: 4096,
+      ...(target.remote
+        ? { ingress: "internal-alb" }
+        : { nginxWorkerConnections: 2048, nginxNoFile: 4096 }),
     },
     generator: {
-      stages: profile === "full" ? [25, 100, 250, 500] : [5, 15, 30],
-      stageSeconds: profile === "full" ? 30 : 7,
+      ...(target.scenario === "plateaus"
+        ? {
+            executor: "constant-arrival-rate",
+            durationSeconds: 180,
+            warmupSeconds: 30,
+            phases: plateauPhases,
+          }
+        : {
+            executor: "ramping-arrival-rate",
+            stages: profile === "full" ? [25, 100, 250, 500] : [5, 15, 30],
+            stageSeconds: profile === "full" ? 30 : 7,
+          }),
       maxVUsPerWorkload: 300,
       sqsBatchConcurrency: 5,
     },
@@ -334,25 +504,75 @@ try {
   await write("environment", metadata);
   let uniqueCommands = 20;
   const phases: Record<string, unknown>[] = [];
-  for (const phase of ["hot_wallet", "distributed_wallets", "replays", "hot_plus_distributed"]) {
+  const phasePlan =
+    target.scenario === "plateaus"
+      ? plateauPhases
+      : ["hot_wallet", "distributed_wallets", "replays", "hot_plus_distributed"].map((phase) => ({
+          phase,
+          workload: phase,
+          rate: 0,
+        }));
+  for (const { phase, workload: workloadPhase, rate } of phasePlan) {
     console.log(`Load phase: ${phase}`);
     const phaseStart = Date.now();
     const countersBefore = await snapshot();
-    const output = await dc(
-      [
-        "run",
-        "--rm",
-        "--no-deps",
-        "k6",
-        "run",
-        "--log-format",
-        "raw",
-        "--console-output",
-        `/results/${phase}-responses.jsonl`,
-        "/load/k6/wagering.js",
-      ],
-      { LOAD_PHASE: phase },
-    );
+    const phaseEnvironment = {
+      ...environment,
+      LOAD_PHASE: phase,
+      LOAD_WORKLOAD: workloadPhase,
+      LOAD_SCENARIO: target.scenario,
+      LOAD_RATE: String(rate),
+    };
+    const output = target.remote
+      ? await remoteK6(
+          [
+            "--network",
+            "host",
+            "--user",
+            `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--mount",
+            `type=bind,src=${resolve("load")},dst=/load,readonly`,
+            "--mount",
+            `type=bind,src=${runDir},dst=/results`,
+            ...[
+              "LOAD_PHASE",
+              "LOAD_WORKLOAD",
+              "LOAD_SCENARIO",
+              "LOAD_RATE",
+              "LOAD_API_URL",
+              "LOAD_TOKEN_URL",
+              "PROVIDER_A_SECRET",
+            ].flatMap((name) => ["--env", name]),
+            target.image,
+            "run",
+            "--log-format",
+            "raw",
+            "--console-output",
+            `/results/${phase}-responses.jsonl`,
+            "/load/k6/wagering.js",
+          ],
+          phaseEnvironment,
+        )
+      : await dc(
+          [
+            "run",
+            "--rm",
+            "--no-deps",
+            "k6",
+            "run",
+            "--log-format",
+            "raw",
+            "--console-output",
+            `/results/${phase}-responses.jsonl`,
+            "/load/k6/wagering.js",
+          ],
+          phaseEnvironment,
+        );
     const phaseEnd = Date.now();
     await Bun.write(`${runDir}/${phase}.txt`, output);
     // A successful k6 process alone does not prove handleSummary wrote a usable result.
@@ -388,9 +608,9 @@ try {
       }
     }
     const workloads: Workload[] =
-      phase === "hot_wallet"
+      workloadPhase === "hot_wallet"
         ? ["hot"]
-        : phase === "hot_plus_distributed"
+        : workloadPhase === "hot_plus_distributed"
           ? ["hot", "distributed"]
           : ["distributed"];
     let recovered = 0;
@@ -463,9 +683,12 @@ try {
     uniqueCommands += phaseUnique;
     const recoveryMs = Date.now() - recoveryStart;
     const outboxDrainMs = await drain();
+    const events = await drainEvents();
     await scrapeFence();
     await write(`${phase}-counters`, { before: countersBefore, after: await snapshot() });
     await write(`${phase}-prometheus`, await phaseMetrics(phaseStart, phaseEnd));
+    if (target.remote)
+      await write(`${phase}-prometheus-through-drain`, await phaseMetrics(phaseStart, Date.now()));
     phases.push({
       phase,
       startedAt: phaseStart,
@@ -474,68 +697,88 @@ try {
       recovered,
       recoveryMs,
       outboxDrainMs,
+      events,
+      ...(target.scenario === "plateaus"
+        ? {
+            workload: workloadPhase,
+            ratePerExecutor: rate,
+            durationSeconds: 180,
+            warmupSeconds: 30,
+            nominalScheduled: rate * 180 * (workloadPhase === "hot_plus_distributed" ? 2 : 1),
+          }
+        : {}),
       generatorDroppedIterations: count(summary, "dropped_iterations"),
     });
     console.log(
       `Load ${phase}: ${phaseUnique} unique, ${recovered} recovered, outbox drain ${outboxDrainMs}ms`,
     );
   }
-  console.log("Load phase: sqs_backlog");
-  const sqsStart = Date.now();
-  const sqsCountersBefore = await snapshot();
-  const sqsCount = profile === "full" ? 10_000 : 1000;
-  let sampledBacklogPeak = 0;
-  let samplingError: unknown;
-  let sampling = true;
-  const sampler = (async () => {
-    while (sampling) {
-      try {
-        sampledBacklogPeak = Math.max(sampledBacklogPeak, await queueDepth(QUEUES.requests));
-      } catch (error) {
-        samplingError = error;
+  let sqs: Record<string, unknown> | undefined;
+  const sqsCount = target.scenario === "standard" ? (profile === "full" ? 10_000 : 1000) : 0;
+  if (sqsCount) {
+    console.log("Load phase: sqs_backlog");
+    const sqsStart = Date.now();
+    const sqsCountersBefore = await snapshot();
+    let sampledBacklogPeak = 0;
+    let samplingError: unknown;
+    let sampling = true;
+    const sampler = (async () => {
+      while (sampling) {
+        try {
+          sampledBacklogPeak = Math.max(sampledBacklogPeak, await queueDepth(QUEUES.requests));
+        } catch (error) {
+          samplingError = error;
+        }
+        if (sampling) await Bun.sleep(250);
       }
-      if (sampling) await Bun.sleep(250);
+    })();
+    let producer: Awaited<ReturnType<typeof produceBacklog>>;
+    try {
+      producer = await produceBacklog(
+        transport,
+        fixtures,
+        sqsCount,
+        target.remote ? cancellation.signal : undefined,
+      );
+      await pollUntil(
+        "all intended SQS commands committed",
+        async () =>
+          (await scalar(
+            "SELECT count(*)::int AS count FROM wager_transactions WHERE external_transaction_id LIKE ? AND status = 'PROCESSED'",
+            [`${runId}:sqs_backlog:%`],
+          )) === sqsCount,
+        180_000,
+        250,
+      );
+      await pollUntil(
+        "SQS requests acknowledged",
+        async () => (await queueDepth(QUEUES.requests)) === 0,
+        60_000,
+        250,
+      );
+    } finally {
+      sampling = false;
+      await sampler;
     }
-  })();
-  let producer: Awaited<ReturnType<typeof produceBacklog>>;
-  try {
-    producer = await produceBacklog(transport, fixtures, sqsCount);
-    await pollUntil(
-      "all intended SQS commands committed",
-      async () =>
-        (await scalar(
-          "SELECT count(*)::int AS count FROM wager_transactions WHERE external_transaction_id LIKE ? AND status = 'PROCESSED'",
-          [`${runId}:sqs_backlog:%`],
-        )) === sqsCount,
-      180_000,
-      250,
-    );
-    await pollUntil(
-      "SQS requests acknowledged",
-      async () => (await queueDepth(QUEUES.requests)) === 0,
-      60_000,
-      250,
-    );
-  } finally {
-    sampling = false;
-    await sampler;
+    if (samplingError) throw new Error("SQS backlog sampling failed");
+    if (sampledBacklogPeak <= 0) throw new Error("SQS workload produced no observable backlog");
+    const sqsEnd = Date.now();
+    const sqsOutboxDrainMs = await drain();
+    const events = await drainEvents();
+    await scrapeFence();
+    await write("sqs_backlog-counters", { before: sqsCountersBefore, after: await snapshot() });
+    sqs = {
+      ...producer,
+      completedAt: sqsEnd,
+      drainAfterEnqueueMs: sqsEnd - producer.enqueuedAt,
+      sampledBacklogPeak,
+      outboxDrainMs: sqsOutboxDrainMs,
+      events,
+    };
+    await write("sqs_backlog", sqs);
+    await write("sqs_backlog-prometheus", await phaseMetrics(sqsStart, sqsEnd));
+    uniqueCommands += sqsCount;
   }
-  if (samplingError) throw new Error("SQS backlog sampling failed");
-  if (sampledBacklogPeak <= 0) throw new Error("SQS workload produced no observable backlog");
-  const sqsEnd = Date.now();
-  const sqsOutboxDrainMs = await drain();
-  await scrapeFence();
-  await write("sqs_backlog-counters", { before: sqsCountersBefore, after: await snapshot() });
-  const sqs = {
-    ...producer,
-    completedAt: sqsEnd,
-    drainAfterEnqueueMs: sqsEnd - producer.enqueuedAt,
-    sampledBacklogPeak,
-    outboxDrainMs: sqsOutboxDrainMs,
-  };
-  await write("sqs_backlog", sqs);
-  await write("sqs_backlog-prometheus", await phaseMetrics(sqsStart, sqsEnd));
-  uniqueCommands += sqsCount;
   const transactions = uniqueCommands + 1001;
   await write("expected", { transactions, sqs: sqsCount });
   await pollUntil(
@@ -554,7 +797,8 @@ try {
   );
   const participation = await snapshot();
   for (const [role, replicas] of Object.entries(participation))
-    if (
+    if (target.scenario === "plateaus" && role === "consumer") continue;
+    else if (
       replicas.length !== (role === "worker" ? 2 : 3) ||
       replicas.some(
         (replica) =>
@@ -569,7 +813,31 @@ try {
       throw new Error(`Missing actual load participation: ${role}`);
   await write("participation", { before: baseline, after: participation });
   if (await queueDepth(QUEUES.deadLetters)) throw new Error("DLQ is not empty after load");
+  if (observer) {
+    await drainEvents();
+    await write("event-observer", await observer.stop());
+    const [publicationLatency] = await connection.execute(`SELECT count(*)::int AS events,
+      min(extract(epoch FROM published_at-occurred_at)*1000) AS min_ms,
+      percentile_cont(0.50) WITHIN GROUP (ORDER BY extract(epoch FROM published_at-occurred_at)*1000) AS p50_ms,
+      percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM published_at-occurred_at)*1000) AS p95_ms,
+      percentile_cont(0.99) WITHIN GROUP (ORDER BY extract(epoch FROM published_at-occurred_at)*1000) AS p99_ms,
+      max(extract(epoch FROM published_at-occurred_at)*1000) AS max_ms
+      FROM outbox_messages WHERE published_at IS NOT NULL`);
+    await write("publication-latency", {
+      definition:
+        "published_at minus occurred_at; publication confirmation, not HTTP latency or SQS delivery",
+      ...publicationLatency,
+    });
+  }
+  if (stopSampler) {
+    const sampling = await stopSampler();
+    stopSampler = undefined;
+    await write("resource-backlog-samples", sampling);
+    if (sampling.failed) throw new Error("Remote resource/backlog sampler failed");
+  }
   await verifyFinancialState();
+  if (target.remote) await verifyLoadManifest(target.manifest, target.commit);
+  checkCancellation();
   const proof = (await Bun.file(`${runDir}/verification.json`).json()) as {
     runId: string;
     passed: boolean;
@@ -590,6 +858,19 @@ try {
   });
   console.log(`Load passed: ${runDir}/result.json`);
 } catch (error) {
+  await write("failure", {
+    runId,
+    passed: false,
+    at: Date.now(),
+    errorCode: error instanceof Error ? error.name : "UnknownError",
+  });
+  if (observer) {
+    try {
+      await write("event-observer-partial", await observer.stop());
+    } catch {
+      await write("event-observer-partial", { failed: true });
+    }
+  }
   if (database) {
     console.error("Load failed; checking partial financial state before teardown");
     try {
@@ -603,8 +884,11 @@ try {
   }
   throw error;
 } finally {
+  if (stopSampler) await write("resource-backlog-samples", await stopSampler());
+  if (target.remote) process.off("SIGTERM", cancel);
   transport?.close();
   await dependencies?.onModuleDestroy();
   await database?.onModuleDestroy();
-  if (process.env.KEEP_STACK !== "1") await dc(["down", "--volumes", "--remove-orphans"]);
+  if (!target.remote && process.env.KEEP_STACK !== "1")
+    await dc(["down", "--volumes", "--remove-orphans"]);
 }

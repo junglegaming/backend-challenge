@@ -8,11 +8,14 @@ export async function produceBacklog(
   transport: SqsTransport,
   fixtures: LoadFixtures,
   count: number,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const startedAt = Date.now();
   const QueueUrl = await transport.queue(QUEUES.requests);
   const batches = Array.from({ length: Math.ceil(count / 10) }, (_, batch) => batch);
   await parallelEach(batches, 5, async (batch) => {
+    signal?.throwIfAborted();
     const Entries = Array.from({ length: Math.min(10, count - batch * 10) }, (_, offset) => {
       const index = batch * 10 + offset;
       const command = loadCommand(fixtures, "sqs_backlog", "distributed", index);
@@ -30,7 +33,9 @@ export async function produceBacklog(
       };
     });
     const result = await transport.client.send(new SendMessageBatchCommand({ QueueUrl, Entries }), {
-      abortSignal: AbortSignal.timeout(10_000),
+      abortSignal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+        : AbortSignal.timeout(10_000),
     });
     const confirmed = new Set(result.Successful?.map((entry) => entry.Id));
     if (result.Failed?.length || Entries.some((entry) => !confirmed.has(entry.Id)))
