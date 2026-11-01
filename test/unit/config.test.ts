@@ -15,6 +15,58 @@ const configuration = {
 };
 
 describe("startup configuration", () => {
+  test("omits static credentials for the AWS role chain and preserves complete local credentials", () => {
+    const role = parseConfiguration({
+      ...configuration,
+      AWS_ACCESS_KEY_ID: undefined,
+      AWS_SECRET_ACCESS_KEY: undefined,
+    });
+    expect(Object.hasOwn(role.sqs, "credentials")).toBe(false);
+    expect(parseConfiguration(configuration).sqs.credentials).toEqual({
+      accessKeyId: "local",
+      secretAccessKey: "local",
+    });
+    expect(
+      Object.hasOwn(
+        parseConfiguration({ ...configuration, AWS_ACCESS_KEY_ID: "", AWS_SECRET_ACCESS_KEY: "" })
+          .sqs,
+        "credentials",
+      ),
+    ).toBe(false);
+  });
+  test.each([
+    { AWS_ACCESS_KEY_ID: undefined },
+    { AWS_SECRET_ACCESS_KEY: undefined },
+    { AWS_ACCESS_KEY_ID: "" },
+    { AWS_SECRET_ACCESS_KEY: " " },
+  ])("rejects an incomplete static credential pair without disclosing it", (missing) => {
+    expect(() => parseConfiguration({ ...configuration, ...missing })).toThrow(
+      "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together",
+    );
+  });
+  test("queue creation and database TLS keep the local defaults and require explicit opt-ins", () => {
+    const local = parseConfiguration(configuration);
+    expect(local.bootstrapCreateQueues).toBe(true);
+    expect(Object.hasOwn(local.database, "sslCaFile")).toBe(false);
+    const aws = parseConfiguration({
+      ...configuration,
+      BOOTSTRAP_CREATE_QUEUES: "false",
+      DB_SSL_CA_FILE: "/public-ca.pem",
+    });
+    expect(aws.bootstrapCreateQueues).toBe(false);
+    expect(aws.database.sslCaFile).toBe("/public-ca.pem");
+    expect(() => parseConfiguration({ ...configuration, DB_SSL_CA_FILE: " " })).toThrow(
+      "DB_SSL_CA_FILE",
+    );
+  });
+  test.each(["", "0", "1", "FALSE", "no"])(
+    "rejects an ambiguous queue ownership flag %s",
+    (value) => {
+      expect(() =>
+        parseConfiguration({ ...configuration, BOOTSTRAP_CREATE_QUEUES: value }),
+      ).toThrow("Invalid configuration: BOOTSTRAP_CREATE_QUEUES");
+    },
+  );
   test("test crash barriers cannot be enabled outside the test environment", () => {
     expect(() =>
       parseConfiguration({
