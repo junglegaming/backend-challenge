@@ -1,5 +1,7 @@
 import { CreateQueueCommand, GetQueueAttributesCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { MikroORM } from "@mikro-orm/postgresql";
 import pino from "pino";
+import { databaseOptions } from "../../mikro-orm.config";
 import { parseConfiguration } from "../config/config";
 import { QUEUES } from "../observability/health/dependencies";
 
@@ -11,6 +13,12 @@ const sqs = new SQSClient({
   md5: false,
 });
 try {
+  const orm = await MikroORM.init(databaseOptions(config.database));
+  try {
+    await orm.migrator.up();
+  } finally {
+    await orm.close(true);
+  }
   const deadLetter = await sqs.send(
     new CreateQueueCommand({
       QueueName: QUEUES.deadLetters,
