@@ -50,7 +50,7 @@ export function settle(input: SettlementInput): SettlementOutcome {
     if (
       tx.providerId !== ref.providerId ||
       tx.playerId !== ref.playerId ||
-      tx.walletId !== ref.walletId ||
+      tx.walletId.toLowerCase() !== ref.walletId.toLowerCase() ||
       tx.money.currency !== ref.money.currency ||
       tx.roundId !== ref.roundId
     )
