@@ -2,12 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadSourceFiles } from "../../load/source-files";
 import { loadTarget, plateauPhases, remoteTokens, verifyLoadManifest } from "../../load/target";
 
 const env = () => ({
   LOAD_TARGET: "remote",
   LOAD_SOURCE_COMMIT: "a".repeat(40),
   LOAD_SOURCE_MANIFEST: "manifest.json",
+  LOAD_SOURCE_MANIFEST_SHA256: "d".repeat(64),
   LOAD_K6_IMAGE: `example.invalid/k6@sha256:${"b".repeat(64)}`,
   LOAD_APP_IMAGE: `example.invalid/app@sha256:${"c".repeat(64)}`,
   LOAD_API_URL: "http://api.internal",
@@ -48,6 +50,7 @@ test("remote requires explicit endpoints, credentials, TLS and pinned provenance
     "PROVIDER_A_SECRET",
     "OPERATOR_SECRET",
     "LOAD_SOURCE_MANIFEST",
+    "LOAD_SOURCE_MANIFEST_SHA256",
   ]) {
     const incomplete: NodeJS.ProcessEnv = env();
     delete incomplete[field];
@@ -99,25 +102,45 @@ test("remote token acquisition uses the supplied endpoint and caches without per
 
 test("remote source manifest rejects mismatched identity and changed bytes", async () => {
   const dir = await mkdtemp(join(tmpdir(), "load-manifest-"));
-  const file = `load-manifest-${crypto.randomUUID()}.txt`;
   try {
-    await Bun.write(file, "original");
-    const manifest = join(dir, "manifest.json");
-    await Bun.write(
-      manifest,
-      JSON.stringify({
-        commit: "a".repeat(40),
-        files: {
-          [file]: new Bun.CryptoHasher("sha256").update("original").digest("hex"),
-        },
-      }),
+    const path = join(dir, "manifest.json");
+    const files: Record<string, string> = {};
+    for (const file of loadSourceFiles)
+      files[file] = new Bun.CryptoHasher("sha256")
+        .update(await Bun.file(file).arrayBuffer())
+        .digest("hex");
+    const write = async (entries: Record<string, string>) => {
+      const bytes = JSON.stringify({ commit: "a".repeat(40), files: entries });
+      await Bun.write(path, bytes);
+      return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    };
+    const digest = await write(files);
+    expect((await verifyLoadManifest(path, "a".repeat(40), digest)).sha256).toBe(digest);
+    await expect(verifyLoadManifest(path, "b".repeat(40), digest)).rejects.toThrow("identity");
+    await expect(verifyLoadManifest(path, "a".repeat(40), "0".repeat(64))).rejects.toThrow(
+      "digest",
     );
-    expect((await verifyLoadManifest(manifest, "a".repeat(40))).commit).toBe("a".repeat(40));
-    await expect(verifyLoadManifest(manifest, "b".repeat(40))).rejects.toThrow("identity");
-    await Bun.write(file, "changed");
-    await expect(verifyLoadManifest(manifest, "a".repeat(40))).rejects.toThrow("mismatch");
+    for (const required of [
+      "src/main.ts",
+      "scripts/aws-runner.ts",
+      "load/event-verification.ts",
+      "test/support/event-consumer.ts",
+      "bun.lock",
+    ]) {
+      const omitted = { ...files };
+      delete omitted[required];
+      const incompleteDigest = await write(omitted);
+      await expect(verifyLoadManifest(path, "a".repeat(40), incompleteDigest)).rejects.toThrow(
+        "Incomplete",
+      );
+    }
+    const mismatched = { ...files, "src/main.ts": "0".repeat(64) };
+    const changedDigest = await write(mismatched);
+    await expect(verifyLoadManifest(path, "a".repeat(40), changedDigest)).rejects.toThrow(
+      "mismatch",
+    );
+    await expect(verifyLoadManifest(path, "a".repeat(40), digest)).rejects.toThrow("digest");
   } finally {
-    await rm(file, { force: true });
     await rm(dir, { force: true, recursive: true });
   }
 });
