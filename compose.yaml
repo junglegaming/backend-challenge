@@ -52,6 +52,17 @@ x-app: &app
     start_period: 10s
 
 services:
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    user: "${LOAD_UID:-12345}:${LOAD_GID:-12345}"
+    volumes:
+      - ./load:/load:ro
+      - ${LOAD_RESULTS_DIR:-./load/results}:/results
+    environment:
+      LOAD_PHASE: ${LOAD_PHASE:-hot_wallet}
+      PROVIDER_A_SECRET: ${PROVIDER_A_SECRET:-local-dev-only-provider-a}
+
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.13.0
     profiles: [chaos]

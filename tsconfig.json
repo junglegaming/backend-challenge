@@ -15,5 +15,12 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts", "database/**/*.ts", "*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "test/**/*.ts",
+    "load/**/*.ts",
+    "database/**/*.ts",
+    "*.ts"
+  ]
 }
