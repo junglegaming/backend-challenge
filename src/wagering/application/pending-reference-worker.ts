@@ -1,19 +1,22 @@
 import { hostname } from "node:os";
 import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import pino from "pino";
 import { Configuration } from "../../config/config";
+import { WageringTelemetry } from "../../observability/wagering-telemetry";
 import { PollingLoop, pause } from "../../shared/application/polling-loop";
 import { ResolvePendingTransaction } from "./resolve-pending-transaction";
 
 @Injectable()
 export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = pino();
+  private get logger() {
+    return this.telemetry.logger;
+  }
   private readonly instanceId = hostname();
   private readonly loop: PollingLoop;
 
   constructor(
     private readonly configuration: Configuration,
     private readonly resolver: ResolvePendingTransaction,
+    private readonly telemetry: WageringTelemetry,
   ) {
     this.loop = new PollingLoop(
       async (signal) => {
@@ -28,7 +31,7 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
           });
       },
       () =>
-        this.logger.warn({
+        this.logger.warning({
           event: "pending_reference_attempt_failed",
           instanceId: this.instanceId,
         }),

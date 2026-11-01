@@ -1,9 +1,9 @@
 import { hostname } from "node:os";
 import { Message } from "@aws-sdk/client-sqs";
 import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import pino from "pino";
 import { Configuration } from "../../config/config";
 import { QUEUES } from "../../observability/health/dependencies";
+import { WageringTelemetry } from "../../observability/wagering-telemetry";
 import { canonicalHash } from "../../shared/application/canonical-json";
 import { PollingLoop, pause } from "../../shared/application/polling-loop";
 import { SyncPointPort } from "../../shared/application/sync-point";
@@ -22,7 +22,9 @@ import { InvalidWagerMessage, parseWagerMessage } from "./wager-message";
 
 @Injectable()
 export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = pino();
+  private get logger() {
+    return this.telemetry.logger;
+  }
   private readonly instanceId = hostname();
   private readonly loop: PollingLoop;
   private databaseUnavailable = false;
@@ -37,10 +39,11 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
     private readonly submit: SubmitWagerTransaction,
     private readonly database: Database,
     private readonly syncPoint: SyncPointPort,
+    private readonly telemetry: WageringTelemetry,
   ) {
     this.loop = new PollingLoop(
       (signal) => this.step(signal),
-      () => this.logger.warn({ event: "consumer_poll_failed", instanceId: this.instanceId }),
+      () => this.logger.warning({ event: "consumer_poll_failed", instanceId: this.instanceId }),
     );
   }
   onModuleInit(): void {
@@ -87,7 +90,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
                 blocked = !(await this.process(message));
               } catch {
                 blocked = true;
-                this.logger.warn({
+                this.logger.warning({
                   event: "consumer_delivery_failed",
                   messageId: message.MessageId,
                   instanceId: this.instanceId,
@@ -102,6 +105,12 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
     );
   }
   private async process(message: Message): Promise<boolean> {
+    return this.telemetry.context.run(
+      { channel: "sqs", messageId: message.MessageId, correlationId: message.MessageId },
+      () => this.processMessage(message),
+    );
+  }
+  private async processMessage(message: Message): Promise<boolean> {
     let messageId = message.MessageId ?? "invalid";
     const attempt = Number(message.Attributes?.ApproximateReceiveCount ?? "1");
     try {
@@ -109,6 +118,12 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
       if (message.Attributes?.MessageGroupId !== envelope.data.walletId)
         throw new InvalidWagerMessage("INVALID_MESSAGE");
       messageId = envelope.messageId;
+      this.telemetry.context.add({
+        messageId,
+        correlationId: messageId,
+        walletId: envelope.data.walletId,
+        providerId: envelope.data.providerId,
+      });
       const context = { operationId: messageId, instanceId: this.instanceId, attempt };
       let result: SubmissionResult;
       try {
@@ -122,7 +137,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
       } catch (error) {
         if (error instanceof TransientProcessingError) {
           this.databaseUnavailable = true;
-          this.logger.warn({
+          this.logger.warning({
             event: "consumer_database_paused",
             messageId,
             instanceId: this.instanceId,
@@ -132,8 +147,10 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
       }
       await this.syncPoint.reach("consumer.after_commit_before_ack", context);
       if (this.drainExpired) return false;
-      if (result.type === "completed" && result.transaction.status === "FAILED")
+      if (result.type === "completed" && result.transaction.status === "FAILED") {
         await this.transport.deadLetter(message, messageId, "PROCESSING_FAILED");
+        this.telemetry.dlq.inc({ reason: "PROCESSING_FAILED" });
+      }
       await this.transport.acknowledge(QUEUES.requests, message);
       this.logger.info({
         event: "consumer_message_completed",
@@ -158,8 +175,9 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
               : undefined;
       if (reason) {
         await this.transport.deadLetter(message, messageId, reason);
+        this.telemetry.dlq.inc({ reason });
         await this.transport.acknowledge(QUEUES.requests, message);
-        this.logger.warn({
+        this.logger.warning({
           event: "consumer_message_dead_lettered",
           messageId,
           reason,
@@ -174,7 +192,8 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
       );
       const seconds = Math.min(config.retryMaxSeconds, Math.ceil(base * (1 + Math.random() * 0.2)));
       await this.transport.visibility(QUEUES.requests, message, seconds);
-      this.logger.warn({
+      this.telemetry.retries.inc({ operation: "consumer" });
+      this.logger.warning({
         event: "consumer_message_retry",
         messageId,
         attempt,
@@ -188,7 +207,7 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
     try {
       await this.transport.visibility(QUEUES.requests, message, 0);
     } catch {
-      this.logger.warn({ event: "consumer_release_failed", instanceId: this.instanceId });
+      this.logger.warning({ event: "consumer_release_failed", instanceId: this.instanceId });
     }
   }
   async onModuleDestroy(): Promise<void> {

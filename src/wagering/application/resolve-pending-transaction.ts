@@ -27,6 +27,35 @@ export class ResolvePendingTransaction {
   }
 
   private async run(transactionId?: string) {
+    return this.telemetry.context.run(
+      { channel: "pending", correlationId: randomUUID(), transactionId },
+      async () => {
+        const start = performance.now();
+        try {
+          const result = await this.process(transactionId);
+          if (result) {
+            if (result.status !== WagerTransactionStatus.PendingReference)
+              this.telemetry.transactions.inc({
+                status: result.status,
+                kind: result.kind,
+                channel: "pending",
+              });
+            this.telemetry.observeDuration("pending", result.status, start);
+            this.telemetry.logger.info({
+              event: "pending_reference_completed",
+              outcome: result.status,
+            });
+          }
+          return result;
+        } catch (error) {
+          this.telemetry.observeDuration("pending", "transient", start);
+          this.telemetry.logger.warning({ event: "pending_reference_failed" });
+          throw error;
+        }
+      },
+    );
+  }
+  private async process(transactionId?: string) {
     let selectedId = transactionId;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -36,7 +65,10 @@ export class ResolvePendingTransaction {
       } catch (error) {
         this.telemetry.databaseError(error);
         const classification = classifySqlError(error);
-        if (classification === "known_unique_race" && attempt === 0) continue;
+        if (classification === "known_unique_race" && attempt === 0) {
+          this.telemetry.retries.inc({ operation: "database" });
+          continue;
+        }
         if (classification === "permanent" && selectedId) {
           try {
             return await this.resolve(selectedId, true, () => {});
@@ -60,6 +92,7 @@ export class ResolvePendingTransaction {
       if (transactionId && (!initial || initial.status !== WagerTransactionStatus.PendingReference))
         return;
       const now = new Date();
+      const start = performance.now();
       const wallet = initial
         ? await this.wallets.lock(tx, initial.walletId)
         : await this.wallets.lockNextWithDueReference(tx, now);
@@ -68,12 +101,22 @@ export class ResolvePendingTransaction {
         ? await this.transactions.find(tx, transactionId)
         : await this.transactions.findNextDueReference(tx, wallet?.id ?? "", now);
       if (!transaction || transaction.status !== WagerTransactionStatus.PendingReference) return;
+      this.telemetry.observeLock(start);
+      this.telemetry.context.add({
+        transactionId: transaction.id,
+        walletId: transaction.walletId,
+        providerId: transaction.providerId,
+      });
+      if (transaction.referenceAttempts > 0) this.telemetry.retries.inc({ operation: "reference" });
       selected(transaction.id);
       await this.settlement[failed ? "fail" : "apply"](
         tx,
         transaction,
         wallet,
-        { correlationId: randomUUID(), causationId: transaction.id },
+        {
+          correlationId: String(this.telemetry.context.current().correlationId),
+          causationId: transaction.id,
+        },
         true,
       );
       return transactionView(transaction);

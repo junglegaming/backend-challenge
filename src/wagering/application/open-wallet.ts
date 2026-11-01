@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Injectable } from "@nestjs/common";
 import { OutboxMessage } from "../../messaging/domain/outbox-message";
+import { WageringTelemetry } from "../../observability/wagering-telemetry";
 import { UnitOfWork } from "../../shared/application/unit-of-work";
 import { Money, MoneyProps } from "../../shared/domain/money";
 import { sqlErrorFields } from "../../shared/infrastructure/sql-error-classifier";
@@ -25,6 +26,7 @@ export class OpenWallet {
     private readonly transactions: WagerTransactionRepository,
     private readonly ledger: LedgerRepository,
     private readonly outbox: OutboxWriter,
+    private readonly telemetry: WageringTelemetry,
   ) {}
 
   async handle(command: { playerId: string; initialBalance: MoneyProps; correlationId: string }) {
@@ -40,7 +42,7 @@ export class OpenWallet {
       at: now,
     });
     try {
-      return await this.uow.run(async (tx) => {
+      const result = await this.uow.run(async (tx) => {
         await this.wallets.insert(tx, wallet);
         if (ledgerEntry) {
           const business = {
@@ -83,6 +85,17 @@ export class OpenWallet {
         }
         return walletView(wallet);
       });
+      if (ledgerEntry)
+        this.telemetry.transactions.inc({ status: "PROCESSED", kind: "OPENING", channel: "http" });
+      this.telemetry.logger.info({
+        event: "wallet_opened",
+        correlationId: command.correlationId,
+        walletId: id,
+        transactionId: ledgerEntry ? openingId : undefined,
+        providerId: "internal",
+        channel: "http",
+      });
+      return result;
     } catch (error) {
       const { code, constraint } = sqlErrorFields(error);
       if (code === "23505" && constraint === "uq_wallets_player_currency")

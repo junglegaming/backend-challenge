@@ -1,6 +1,5 @@
 import { Module } from "@nestjs/common";
 import { MessagingPersistenceModule } from "../messaging/messaging-persistence.module";
-import { WageringTelemetry } from "../observability/wagering-telemetry";
 import { SyncPointModule } from "../shared/infrastructure/sync-point.module";
 import { OpenWallet } from "./application/open-wallet";
 import {
@@ -29,7 +28,6 @@ import {
     { provide: WagerTransactionRepository, useClass: SqlWagerTransactionRepository },
     { provide: LedgerRepository, useClass: SqlLedgerRepository },
     { provide: ReconciliationRepository, useClass: SqlReconciliationRepository },
-    WageringTelemetry,
     SettlementWriter,
     OpenWallet,
     SubmitWagerTransaction,
@@ -43,7 +41,6 @@ import {
     ResolvePendingTransaction,
     WageringQueries,
     ReconcileWallet,
-    WageringTelemetry,
   ],
 })
 export class WageringModule {}

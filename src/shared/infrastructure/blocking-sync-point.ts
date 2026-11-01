@@ -1,13 +1,15 @@
-import pino from "pino";
 import { Configuration } from "../../config/config";
+import { JsonLogger } from "../../observability/json-logger";
 import { SyncPointContext, SyncPointPort } from "../application/sync-point";
 
 export class BlockingSyncPoint extends SyncPointPort {
-  private readonly logger = pino();
   private closing = false;
   private readonly waiting = new Set<() => void>();
 
-  constructor(private readonly configuration: Configuration) {
+  constructor(
+    private readonly configuration: Configuration,
+    private readonly logger: JsonLogger,
+  ) {
     super();
   }
 

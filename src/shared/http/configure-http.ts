@@ -7,6 +7,8 @@ import {
   ValidationPipe,
 } from "@nestjs/common";
 import { NestFastifyApplication } from "@nestjs/platform-fastify";
+import { JsonLogger } from "../../observability/json-logger";
+import { LogContext, LogFields } from "../../observability/log-context";
 import {
   TransientProcessingError,
   WalletAlreadyExistsError,
@@ -79,10 +81,12 @@ class ApiExceptionFilter implements ExceptionFilter {
 }
 
 export function configureHttp(app: NestFastifyApplication) {
+  const logs = app.get(LogContext);
+  const logger = app.get(JsonLogger);
   app
     .getHttpAdapter()
     .getInstance()
-    .addHook("onRequest", async (request, reply) => {
+    .addHook("onRequest", (request, reply, done) => {
       const supplied = request.headers["x-correlation-id"];
       const context = request as typeof request & HttpRequest;
       context.correlationId =
@@ -90,6 +94,19 @@ export function configureHttp(app: NestFastifyApplication) {
           ? supplied
           : randomUUID();
       reply.header("X-Correlation-Id", context.correlationId);
+      logs.run({ correlationId: context.correlationId, channel: "http" }, () => {
+        (request as typeof request & { logFields: LogFields }).logFields = logs.current();
+        done();
+      });
+    });
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook("onResponse", (request, reply, done) => {
+      logs.run((request as typeof request & { logFields?: LogFields }).logFields ?? {}, () => {
+        logger.info({ event: "http_request_completed", statusCode: reply.statusCode });
+        done();
+      });
     });
   app.useGlobalPipes(
     new ValidationPipe({

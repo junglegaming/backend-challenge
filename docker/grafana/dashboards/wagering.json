@@ -1,0 +1,344 @@
+{
+  "uid": "wagering",
+  "title": "Wagering Processor",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "refresh": "5s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Transactions by result",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, status, kind, channel) (rate(wagering_transactions_total[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{kind}} {{channel}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Duplicates",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, source) (rate(wagering_duplicates_total[5m]))",
+          "legendFormat": "{{instance}} {{source}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Conflicts",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, type) (rate(wagering_idempotency_conflicts_total[5m]))",
+          "legendFormat": "{{instance}} {{type}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Retries",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, operation) (rate(wagering_retries_total[5m]))",
+          "legendFormat": "{{instance}} {{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Explicit DLQ handoffs",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, reason) (rate(wagering_dlq_messages_total[5m]))",
+          "legendFormat": "{{instance}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Queue depth (shared)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (queue, state) (wagering_sqs_queue_messages)",
+          "legendFormat": "{{queue}} {{state}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Lock conflicts",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, reason) (rate(wagering_lock_conflicts_total[5m]))",
+          "legendFormat": "{{instance}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Wallet lock p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, channel) (rate(wagering_wallet_lock_wait_seconds_bucket[5m])))",
+          "legendFormat": "{{instance}} {{channel}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Processing p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, channel, status) (rate(wagering_processing_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{instance}} {{channel}} {{status}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Outbox lag (shared)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(wagering_outbox_lag_seconds)",
+          "legendFormat": "oldest unpublished event"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Published events",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance, event_type) (rate(wagering_outbox_published_total[5m]))",
+          "legendFormat": "{{instance}} {{event_type}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Publish failures",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(wagering_outbox_publish_failures_total[5m]))",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Pending references (shared)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(wagering_pending_reference_transactions)",
+          "legendFormat": "pending references"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Reconciliation divergences",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (wagering_reconciliation_divergences_total)",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Healthy replicas",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"wagering\"}",
+          "legendFormat": "{{role}} {{instance}}"
+        }
+      ]
+    }
+  ]
+}

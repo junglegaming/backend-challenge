@@ -72,6 +72,58 @@ export class SubmitWagerTransaction {
   ) {}
 
   async handle(command: SubmitCommand, options: SubmissionOptions = {}): Promise<SubmissionResult> {
+    const channel = options.inbox ? "sqs" : "http";
+    return this.telemetry.context.run(
+      {
+        channel,
+        correlationId: command.correlationId,
+        walletId: command.walletId,
+        providerId: command.providerId,
+        messageId: options.inbox?.messageId,
+      },
+      async () => {
+        const start = performance.now();
+        let duplicate: "inbox" | "idempotency" = "idempotency";
+        try {
+          const result = await this.process(command, options, (source) => {
+            duplicate = source;
+          });
+          if (result.type === "completed") {
+            this.telemetry.context.add({ transactionId: result.transaction.transactionId });
+            if (!result.idempotentReplay)
+              this.telemetry.transactions.inc({
+                status: result.transaction.status,
+                kind: command.kind,
+                channel,
+              });
+            else this.telemetry.duplicates.inc({ source: duplicate });
+          } else if (result.type === "duplicate_message")
+            this.telemetry.duplicates.inc({ source: "inbox" });
+          else this.telemetry.conflicts.inc({ type: result.type });
+          const outcome = result.type === "completed" ? result.transaction.status : result.type;
+          this.telemetry.observeDuration(channel, outcome, start);
+          this.telemetry.logger.info({ event: "wager_submission_completed", outcome });
+          return result;
+        } catch (error) {
+          if (error instanceof InboxPayloadConflictError)
+            this.telemetry.conflicts.inc({ type: "inbox_payload" });
+          this.telemetry.observeDuration(
+            channel,
+            error instanceof InboxPayloadConflictError ? "inbox_payload_conflict" : "transient",
+            start,
+          );
+          this.telemetry.logger.warning({ event: "wager_submission_failed" });
+          throw error;
+        }
+      },
+    );
+  }
+
+  private async process(
+    command: SubmitCommand,
+    options: SubmissionOptions,
+    duplicate: (source: "inbox" | "idempotency") => void,
+  ): Promise<SubmissionResult> {
     const props: CreateWagerTransactionProps = {
       ...command,
       id: randomUUID(),
@@ -83,7 +135,7 @@ export class SubmitWagerTransaction {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         return await this.uow.run(async (tx) => {
-          const result = await this.execute(tx, command, props, options, false);
+          const result = await this.execute(tx, command, props, options, false, duplicate);
           if (options.sync) await this.syncPoint.reach("consumer.before_commit", options.sync);
           return result;
         });
@@ -91,10 +143,15 @@ export class SubmitWagerTransaction {
         if (error instanceof InboxPayloadConflictError) throw error;
         this.telemetry.databaseError(error);
         const classification = classifySqlError(error);
-        if (classification === "known_unique_race" && attempt === 0) continue;
+        if (classification === "known_unique_race" && attempt === 0) {
+          this.telemetry.retries.inc({ operation: "database" });
+          continue;
+        }
         if (classification === "permanent") {
           try {
-            return await this.uow.run((tx) => this.execute(tx, command, props, options, true));
+            return await this.uow.run((tx) =>
+              this.execute(tx, command, props, options, true, duplicate),
+            );
           } catch (failureError) {
             if (failureError instanceof InboxPayloadConflictError) throw failureError;
             this.telemetry.databaseError(failureError);
@@ -113,6 +170,7 @@ export class SubmitWagerTransaction {
     props: CreateWagerTransactionProps,
     options: SubmissionOptions,
     failed: boolean,
+    duplicate: (source: "inbox" | "idempotency") => void,
   ): Promise<SubmissionResult> {
     let message: InboxMessage | undefined;
     if (options.inbox) {
@@ -125,6 +183,7 @@ export class SubmitWagerTransaction {
       if (!claim.inserted) {
         if (claim.existing.payloadHash !== message.payloadHash)
           throw new InboxPayloadConflictError("Inbox payload differs");
+        duplicate("inbox");
         // A FAILED inbox commit can precede a failed DLQ send. Return its terminal
         // result again so redelivery completes the DLQ handoff before acknowledgement.
         const existing = await this.transactions.findByKey(
@@ -151,13 +210,17 @@ export class SubmitWagerTransaction {
       }
       return result;
     };
-    const wallet = await this.wallets.lock(tx, command.walletId);
+    const start = performance.now();
+    const wallet = await this.wallets
+      .lock(tx, command.walletId)
+      .finally(() => this.telemetry.observeLock(start));
     const existing = await this.transactions.findByKey(
       tx,
       command.providerId,
       command.idempotencyKey,
     );
     if (existing) {
+      duplicate("idempotency");
       return finish(
         existing.matchesPayload(props.payloadHash)
           ? { type: "completed", transaction: transactionView(existing), idempotentReplay: true }
