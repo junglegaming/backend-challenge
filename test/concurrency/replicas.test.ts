@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { SqsTransport } from "../../src/messaging/infrastructure/sqs-transport";
+import { QUEUES } from "../../src/observability/health/dependencies";
 import { managerFor } from "../../src/shared/infrastructure/unit-of-work";
 import {
   assertLedgerInvariant,
@@ -267,6 +268,80 @@ test("scenario 4: real mixed work is handled by three API and three consumer ins
   const messageIds = new Set<string>();
   const apiInstances = new Set<unknown>();
   const consumerInstances = new Set<unknown>();
+  try {
+    await compose(["stop", "consumer"]);
+    // Finish an empty broker long poll after stopping the old clients, allowing
+    // their outstanding receives to expire before the first gated delivery.
+    expect(
+      await transport.receive(
+        QUEUES.requests,
+        new AbortController().signal,
+        h.values.consumer.waitSeconds,
+      ),
+    ).toEqual([]);
+    const held = [];
+    // SQS does not promise fair distribution of a finite burst. Preserve each
+    // existing replica's exact-operation gate while adding the next consumer.
+    for (let replica = 1; replica <= 3; replica++) {
+      const wallet = await openHttpWallet();
+      const envelope = wagerMessage(wallet);
+      messageIds.add(envelope.messageId);
+      await compose(
+        [
+          "up",
+          "-d",
+          "--no-deps",
+          replica === 1 ? "--force-recreate" : "--no-recreate",
+          "--scale",
+          `consumer=${replica}`,
+          "consumer",
+        ],
+        undefined,
+        {
+          ...testEnvironment,
+          TEST_SYNC_POINTS: "consumer.after_commit_before_ack",
+          TEST_SYNC_MATCH: envelope.messageId,
+          SQS_BATCH_SIZE: "1",
+          SQS_VISIBILITY_SECONDS: "180",
+        },
+      );
+      await sendWager(transport, envelope);
+      const reached = await runtimeEvent(
+        "consumer",
+        (r) =>
+          r.event === "sync_point_reached" &&
+          r.point === "consumer.after_commit_before_ack" &&
+          r.operationId === envelope.messageId,
+      );
+      expect(consumerInstances.has(reached.instanceId)).toBe(false);
+      consumerInstances.add(reached.instanceId);
+      const http = await correlatedSubmit(httpWager(wallet));
+      expect(http.response.status).toBe(200);
+      apiCorrelations.add(http.correlationId);
+      held.push({ wallet, envelope, instanceId: reached.instanceId });
+    }
+    const live = await containersOf("consumer");
+    expect(live).toHaveLength(3);
+    for (const { wallet, envelope, instanceId } of held) {
+      expect(live.some((id) => id.startsWith(String(instanceId)))).toBe(true);
+      expect((await h.queries.wallet(wallet.id))?.balance.amount).toBe("80.00");
+      expect(
+        await sql(
+          "SELECT message_id FROM inbox_messages WHERE message_id = ? AND processed_at IS NOT NULL",
+          [envelope.messageId],
+        ),
+      ).toHaveLength(1);
+    }
+    // Normal shutdown releases the existing gates and completes the real acks.
+    // Read completions before restoring the role replaces their containers/logs.
+    await compose(["stop", "consumer"]);
+    for (const { envelope, instanceId } of held) {
+      const completed = await delivered(envelope.messageId);
+      expect(completed.instanceId).toBe(instanceId);
+    }
+  } finally {
+    await restoreRole("consumer");
+  }
   for (let batch = 0; batch < 4; batch++) {
     await Promise.all(
       Array.from({ length: 18 }, async () => {
@@ -296,7 +371,7 @@ test("scenario 4: real mixed work is handled by three API and three consumer ins
   }
   expect(apiInstances.size).toBeGreaterThanOrEqual(3);
   expect(consumerInstances.size).toBeGreaterThanOrEqual(3);
-});
+}, 180_000);
 
 for (const point of ["consumer.after_commit_before_ack", "consumer.before_commit"]) {
   test(`scenario ${point.endsWith("before_commit") ? "5b" : "5"}: killing the exact replica at ${point} recovers on a different consumer`, async () => {
