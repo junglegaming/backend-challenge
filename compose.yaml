@@ -20,6 +20,16 @@ x-app: &app
     AWS_SECRET_ACCESS_KEY: local
     AUTH_ISSUER: http://keycloak:8080/realms/wagering
     AUTH_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+    CONSUMER_CONCURRENCY: ${CONSUMER_CONCURRENCY:-10}
+    SQS_BATCH_SIZE: ${SQS_BATCH_SIZE:-10}
+    SQS_WAIT_SECONDS: ${SQS_WAIT_SECONDS:-20}
+    SQS_VISIBILITY_SECONDS: ${SQS_VISIBILITY_SECONDS:-30}
+    SQS_MAX_RECEIVES: ${SQS_MAX_RECEIVES:-5}
+    SQS_RETRY_BASE_SECONDS: ${SQS_RETRY_BASE_SECONDS:-2}
+    SQS_RETRY_MAX_SECONDS: ${SQS_RETRY_MAX_SECONDS:-30}
+    SHUTDOWN_DRAIN_MS: ${SHUTDOWN_DRAIN_MS:-25000}
+    TEST_SYNC_POINTS: ${TEST_SYNC_POINTS:-}
+    TEST_SYNC_MATCH: ${TEST_SYNC_MATCH:-}
   depends_on:
     bootstrap:
       condition: service_completed_successfully

@@ -3,6 +3,7 @@ import { Injectable } from "@nestjs/common";
 import { InboxMessage } from "../../messaging/domain/inbox-message";
 import { WageringTelemetry } from "../../observability/wagering-telemetry";
 import { canonicalHash } from "../../shared/application/canonical-json";
+import { SyncPointContext, SyncPointPort } from "../../shared/application/sync-point";
 import { TransactionContext, UnitOfWork } from "../../shared/application/unit-of-work";
 import { Money, MoneyProps } from "../../shared/domain/money";
 import { classifySqlError } from "../../shared/infrastructure/sql-error-classifier";
@@ -10,6 +11,7 @@ import {
   CreateWagerTransactionProps,
   WagerTransaction,
   WagerTransactionKind,
+  WagerTransactionStatus,
 } from "../domain/wager-transaction";
 import { InboxPayloadConflictError, TransientProcessingError } from "./errors";
 import { InboxStore } from "./ports/messaging";
@@ -35,6 +37,7 @@ export interface SubmitCommand extends WagerBusinessFields {
 }
 export interface SubmissionOptions {
   inbox?: { messageId: string; payloadHash: string };
+  sync?: SyncPointContext;
 }
 export type SubmissionResult =
   | { type: "completed"; transaction: TransactionView; idempotentReplay: boolean }
@@ -65,6 +68,7 @@ export class SubmitWagerTransaction {
     private readonly inbox: InboxStore,
     private readonly settlement: SettlementWriter,
     private readonly telemetry: WageringTelemetry,
+    private readonly syncPoint: SyncPointPort,
   ) {}
 
   async handle(command: SubmitCommand, options: SubmissionOptions = {}): Promise<SubmissionResult> {
@@ -78,7 +82,11 @@ export class SubmitWagerTransaction {
     WagerTransaction.create(props); // Validate before SQL; invalid input is never an infrastructure failure.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await this.uow.run((tx) => this.execute(tx, command, props, options, false));
+        return await this.uow.run(async (tx) => {
+          const result = await this.execute(tx, command, props, options, false);
+          if (options.sync) await this.syncPoint.reach("consumer.before_commit", options.sync);
+          return result;
+        });
       } catch (error) {
         if (error instanceof InboxPayloadConflictError) throw error;
         this.telemetry.databaseError(error);
@@ -109,7 +117,7 @@ export class SubmitWagerTransaction {
     let message: InboxMessage | undefined;
     if (options.inbox) {
       message = InboxMessage.receive({
-        consumerName: "wager-transactions",
+        consumerName: "wager-transactions-processor",
         ...options.inbox,
         receivedAt: new Date(),
       });
@@ -117,6 +125,22 @@ export class SubmitWagerTransaction {
       if (!claim.inserted) {
         if (claim.existing.payloadHash !== message.payloadHash)
           throw new InboxPayloadConflictError("Inbox payload differs");
+        // A FAILED inbox commit can precede a failed DLQ send. Return its terminal
+        // result again so redelivery completes the DLQ handoff before acknowledgement.
+        const existing = await this.transactions.findByKey(
+          tx,
+          command.providerId,
+          command.idempotencyKey,
+        );
+        if (
+          existing?.status === WagerTransactionStatus.Failed &&
+          existing.matchesPayload(props.payloadHash)
+        )
+          return {
+            type: "completed",
+            transaction: transactionView(existing),
+            idempotentReplay: true,
+          };
         return { type: "duplicate_message" };
       }
     }

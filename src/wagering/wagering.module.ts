@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { MessagingPersistenceModule } from "../messaging/messaging-persistence.module";
 import { WageringTelemetry } from "../observability/wagering-telemetry";
+import { SyncPointModule } from "../shared/infrastructure/sync-point.module";
 import { OpenWallet } from "./application/open-wallet";
 import {
   LedgerRepository,
@@ -21,7 +22,7 @@ import {
 } from "./infrastructure/repositories";
 
 @Module({
-  imports: [MessagingPersistenceModule],
+  imports: [MessagingPersistenceModule, SyncPointModule],
   controllers: [WageringController],
   providers: [
     { provide: WalletRepository, useClass: SqlWalletRepository },

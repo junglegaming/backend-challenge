@@ -36,9 +36,12 @@ try {
       Attributes: {
         FifoQueue: "true",
         ContentBasedDeduplication: "false",
-        VisibilityTimeout: "30",
-        ReceiveMessageWaitTimeSeconds: "20",
-        RedrivePolicy: JSON.stringify({ deadLetterTargetArn: arn, maxReceiveCount: 5 }),
+        VisibilityTimeout: String(config.consumer.visibilitySeconds),
+        ReceiveMessageWaitTimeSeconds: String(config.consumer.waitSeconds),
+        RedrivePolicy: JSON.stringify({
+          deadLetterTargetArn: arn,
+          maxReceiveCount: config.consumer.maxReceives,
+        }),
       },
     }),
   );

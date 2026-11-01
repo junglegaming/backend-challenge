@@ -15,6 +15,14 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
     }
     return +value;
   }
+  function integer(name: string, fallback: number, max: number): number {
+    const value = env[name] ?? String(fallback);
+    if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(+value) || +value > max)
+      throw new Error(`Invalid configuration: ${name}`);
+    return +value;
+  }
+  if (env.TEST_SYNC_POINTS && env.NODE_ENV !== "test")
+    throw new Error("TEST_SYNC_POINTS requires NODE_ENV=test");
   const role = env.APP_ROLE ?? "api";
   if (role !== "api" && role !== "consumer" && role !== "worker") {
     throw new Error("Invalid configuration: APP_ROLE");
@@ -47,6 +55,20 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
       }),
     }),
     auth: Object.freeze({ issuer: url("AUTH_ISSUER"), jwksUrl: url("AUTH_JWKS_URL") }),
+    consumer: Object.freeze({
+      concurrency: integer("CONSUMER_CONCURRENCY", 10, 100),
+      batchSize: integer("SQS_BATCH_SIZE", 10, 10),
+      waitSeconds: integer("SQS_WAIT_SECONDS", 20, 20),
+      visibilitySeconds: integer("SQS_VISIBILITY_SECONDS", 30, 43_200),
+      maxReceives: integer("SQS_MAX_RECEIVES", 5, 1000),
+      retryBaseSeconds: integer("SQS_RETRY_BASE_SECONDS", 2, 30),
+      retryMaxSeconds: integer("SQS_RETRY_MAX_SECONDS", 30, 43_200),
+      shutdownDrainMs: integer("SHUTDOWN_DRAIN_MS", 25_000, 120_000),
+    }),
+    sync: Object.freeze({
+      points: env.TEST_SYNC_POINTS?.split(",").filter(Boolean) ?? [],
+      match: env.TEST_SYNC_MATCH ?? "",
+    }),
   });
 }
 
