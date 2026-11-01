@@ -21,7 +21,7 @@ try {
   app.useLogger(logger);
   configureShutdownReadiness(adapter, app.get(Dependencies));
   configureHttp(app);
-  app.enableShutdownHooks();
+  app.enableShutdownHooks(undefined, { useProcessExit: true });
   await app.listen(config.port, "0.0.0.0");
   logger.info({ event: "application_started" });
 } catch {
