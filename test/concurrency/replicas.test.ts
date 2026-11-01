@@ -2,7 +2,12 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { SqsTransport } from "../../src/messaging/infrastructure/sqs-transport";
 import { managerFor } from "../../src/shared/infrastructure/unit-of-work";
-import { assertLedgerInvariant, scratchDatabase } from "../support/database";
+import {
+  assertLedgerInvariant,
+  insertRow,
+  rawTransaction,
+  scratchDatabase,
+} from "../support/database";
 import { EventConsumer } from "../support/event-consumer";
 import { apiRequest, httpWager, openHttpWallet, submissionBody, submitHttp } from "../support/http";
 import {
@@ -69,6 +74,55 @@ async function debitCount(walletId: string) {
     )
   )[0]?.count;
 }
+async function causedOutbox(messageId: string) {
+  return sql<{
+    id: string;
+    event_type: string;
+    payload_event_id: string | null;
+    wallet_id: string | null;
+    transaction_id: string | null;
+    outbox_xid: string;
+    attempts: number;
+    published_at: Date | null;
+    ledger_id: string | null;
+    ledger_xid: string | null;
+    ledger_wallet_id: string | null;
+  }>(
+    `SELECT o.id, o.event_type, o.payload->>'eventId' AS payload_event_id,
+       o.payload->'data'->>'walletId' AS wallet_id,
+       o.payload->'data'->>'transactionId' AS transaction_id,
+       o.xmin::text AS outbox_xid, o.attempts, o.published_at,
+       l.id AS ledger_id, l.xmin::text AS ledger_xid,
+       l.wallet_id::text AS ledger_wallet_id
+     FROM outbox_messages o LEFT JOIN wallet_ledger_entries l
+       ON l.transaction_id::text = o.payload->'data'->>'transactionId'
+     WHERE o.payload->>'causationId' = ? ORDER BY o.event_type, o.id`,
+    [messageId],
+  );
+}
+async function assertCausedOutbox(messageId: string, walletId: string, transactionId: string) {
+  const rows = await causedOutbox(messageId);
+  expect(rows).toHaveLength(2);
+  expect(rows.map((row) => row.event_type).sort()).toEqual([
+    "WagerTransactionProcessed",
+    "WalletBalanceChanged",
+  ]);
+  expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+  expect(new Set(rows.map((row) => row.ledger_id)).size).toBe(1);
+  for (const row of rows) {
+    expect(row.payload_event_id).toBe(row.id);
+    expect(row.wallet_id).toBe(walletId);
+    expect(row.transaction_id).toBe(transactionId);
+    expect(row.ledger_id).not.toBeNull();
+    expect(row.ledger_wallet_id).toBe(walletId);
+    // Workers are stopped: these fresh row versions still identify their insert transaction.
+    expect(row.outbox_xid).toMatch(/^\d+$/);
+    expect(row.ledger_xid).toBe(row.outbox_xid);
+    expect(row.attempts).toBe(0);
+    expect(row.published_at).toBeNull();
+  }
+  return rows.map((row) => row.id).sort();
+}
 async function outboxDrained() {
   await pollUntil(
     "empty unpublished outbox",
@@ -103,6 +157,29 @@ test("scenario 1: fifty simultaneous HTTP retries through Nginx cause exactly on
   expect(bodies.filter((b) => !b.idempotentReplay)).toHaveLength(1);
   expect((await h.queries.wallet(wallet.id))?.balance.amount).toBe("90.00");
   expect(await debitCount(wallet.id)).toBe(1);
+
+  // The wallet lock can mask a missing provider/key constraint for same-wallet retries.
+  const other = await openHttpWallet();
+  let violation: unknown;
+  try {
+    await h.uow.run(async (tx) => {
+      await insertRow(
+        tx,
+        "wager_transactions",
+        rawTransaction(other.id, {
+          provider_id: request.providerId,
+          idempotency_key: key,
+          player_id: other.playerId,
+        }),
+      );
+      throw new Error("Rollback-only unique-key probe unexpectedly accepted");
+    });
+  } catch (error) {
+    violation = error;
+  }
+  expect(violation).toMatchObject({ code: "23505" });
+  const error = violation as { constraint?: string; cause?: { constraint?: string } };
+  expect(error.constraint ?? error.cause?.constraint).toBe("uq_wager_transactions_provider_key");
 });
 
 for (const channel of ["http", "sqs", "mixed"] as const) {
@@ -225,11 +302,13 @@ for (const point of ["consumer.after_commit_before_ack", "consumer.before_commit
   test(`scenario ${point.endsWith("before_commit") ? "5b" : "5"}: killing the exact replica at ${point} recovers on a different consumer`, async () => {
     const wallet = await openHttpWallet();
     const envelope = wagerMessage(wallet);
-    await configureRole("consumer", {
-      TEST_SYNC_POINTS: point,
-      TEST_SYNC_MATCH: envelope.messageId,
-    });
     try {
+      await compose(["stop", "worker"]);
+      expect(await containersOf("worker")).toHaveLength(0);
+      await configureRole("consumer", {
+        TEST_SYNC_POINTS: point,
+        TEST_SYNC_MATCH: envelope.messageId,
+      });
       await sendWager(transport, envelope);
       const reached = await runtimeEvent(
         "consumer",
@@ -247,6 +326,22 @@ for (const point of ["consumer.after_commit_before_ack", "consumer.before_commit
           envelope.messageId,
         ]),
       ).toHaveLength(committed ? 1 : 0);
+      let committedEventIds: string[] = [];
+      if (committed) {
+        const observed = await h.queries.providerTransaction(
+          "provider-a",
+          envelope.data.externalTransactionId,
+        );
+        if (!observed) throw new Error("Committed transaction missing at crash gate");
+        expect(observed.status).toBe("PROCESSED");
+        committedEventIds = await assertCausedOutbox(
+          envelope.messageId,
+          wallet.id,
+          observed.transactionId,
+        );
+      } else {
+        expect(await causedOutbox(envelope.messageId)).toHaveLength(0);
+      }
       await killContainer(await instanceContainer("consumer", String(reached.instanceId)));
       const killedAt = Date.now();
       const completion = await delivered(
@@ -257,7 +352,8 @@ for (const point of ["consumer.after_commit_before_ack", "consumer.before_commit
           Number(r.time) >= killedAt,
       );
       expect(completion.outcome).toBe(committed ? "duplicate_message" : "PROCESSED");
-      expect((await transaction(envelope.data.externalTransactionId)).status).toBe("PROCESSED");
+      const recovered = await transaction(envelope.data.externalTransactionId);
+      expect(recovered.status).toBe("PROCESSED");
       expect(await debitCount(wallet.id)).toBe(1);
       expect(
         await sql(
@@ -266,10 +362,20 @@ for (const point of ["consumer.after_commit_before_ack", "consumer.before_commit
         ),
       ).toHaveLength(1);
       expect((await h.queries.wallet(wallet.id))?.balance.amount).toBe("90.00");
+      const recoveredEventIds = await assertCausedOutbox(
+        envelope.messageId,
+        wallet.id,
+        recovered.transactionId,
+      );
+      if (committed) expect(recoveredEventIds).toEqual(committedEventIds);
     } finally {
-      await restoreRole("consumer");
+      try {
+        await restoreRole("consumer");
+      } finally {
+        await restoreRole("worker");
+      }
     }
-  }, 150_000);
+  }, 300_000);
 }
 
 test("race: HTTP refunds and SQS rollbacks compete on thirty bets with exactly one accepted reversal", async () => {
