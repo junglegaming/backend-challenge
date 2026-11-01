@@ -81,9 +81,14 @@ Não se esperam rejeições de negócio, referências pendentes ou conflitos de 
 nesses dados. As latências incluem também as respostas 503; replays têm uma série própria.
 
 Após cada fase, o runner compara as identidades determinísticas e os campos das operações
-com PostgreSQL. Cada 200 novo precisa corresponder a uma operação persistida. Somente as
-operações ausentes correspondentes aos 503 são reenviadas, com a chave e corpo originais,
-fora da janela medida. O relatório separa esse tempo de recuperação. Depois, espera a
+com PostgreSQL. Cada resposta iniciada deixa um registro mínimo de quatro campos em
+`<fase>-responses.jsonl`: workload, índice, status e transactionId. O parser exige os tipos
+exatos, coordenadas completas sem duplicatas e UUID válido nos sucessos. Cada 200 novo
+precisa devolver o mesmo transactionId da sua chave determinística no SQL; cada replay
+precisa devolver o ID original da seed. Um 503 precisa corresponder a uma operação
+ausente no banco. Somente essas operações ausentes são reenviadas, com a chave e corpo originais,
+fora da janela medida. O ID retornado pela recuperação também precisa coincidir com o SQL. Nenhum registro
+individual guarda corpo, header ou token. O relatório separa esse tempo de recuperação. Depois, espera a
 outbox zerar e registra a drenagem residual. O limite por drenagem é de três minutos no
 `quick` e trinta minutos no `full`; atingir esse limite reprova a execução. As quatro
 fases HTTP completas oferecem carga durante cerca de oito minutos, mas o tempo total
@@ -97,11 +102,16 @@ Ao final, a execução falha se houver qualquer uma destas condições: contagem
 de transações, mais de um efeito no ledger, inbox incompleto, quantidade/tipos de eventos
 incompatíveis, outbox pendente, DLQ não vazia ou reconciliação inconsistente. A verificação
 também confere a cadeia de saldos/versões e o saldo reconstruído de todas as 1.001 carteiras.
+Para cada operação processada que altera saldo, exige exatamente dois eventos: um
+`WagerTransactionProcessed` e um `WalletBalanceChanged`, com os tipos dos envelopes
+serializados iguais aos tipos das linhas. Tipo ausente ou divergente também reprova.
 
 ## Como ler os artefatos
 
 `<fase>.json` contém as métricas k6, incluindo contagens, p50 (`med`), p95 e p99 em ms.
 `result.json` identifica fases, recuperação dos 503, descartes do gerador e drenagem.
+Nas tabelas, zero de descartes é o valor registrado pelo runner; quando o k6 omite
+a série `dropped_iterations`, isso não é apresentado como uma série numérica emitida.
 `sqs_backlog.json` registra envio, conclusão, grupos e pico de backlog amostrado a cada
 250 ms; esse pico é uma aproximação, não uma observação contínua.
 
@@ -119,9 +129,10 @@ vezes. As séries cumulativas permitem comparar amostras sem essa soma. Outbox l
 profundidade de fila representam estado compartilhado: a visão global usa o máximo entre
 réplicas, nunca a soma. O lag publicado é o maior valor amostrado.
 
-`<fase>-counters.json` e `participation.json` guardam snapshots brutos. Deltas positivos
-de tentativas nas três APIs e nos três consumers e de eventos nos dois workers comprovam
-trabalho nas oito réplicas após a seed. Um scrape posterior à conclusão evita tomar uma
+`<fase>-counters.json` e `participation.json` guardam snapshots brutos. Contadores finais positivos
+nas três APIs, três consumers e dois workers, comparados aos baselines existentes,
+comprovam participação; as séries das janelas de tráfego confirmam trabalho após a seed.
+Uma série inicial ausente permanece ausente na interpretação, sem delta medido inventado. Um scrape posterior à conclusão evita tomar uma
 amostra antiga como resultado final. `verification.json` só existe com a prova financeira
 aprovada; `result.json` com `passed: true` só é escrito depois de todas as verificações.
 O contador de publicação mede confirmações e pode repetir um mesmo evento em retries
@@ -142,10 +153,10 @@ de memória; esses recursos não eram exclusivos da aplicação. As imagens usad
 `quay.io/keycloak/keycloak:26.8.1`, `nginx:1.31.8-alpine`,
 `prom/prometheus:v3.15.1`, `grafana/grafana:13.3.0` e `grafana/k6:2.3.0`.
 
-O HEAD registrado era `637e10b5955ba0d83a0593e9f91d99c5f9851399`, com as alterações
-da carga ainda locais. As três rodadas apontam para o mesmo hash dos oito
+O HEAD registrado era `06e6165cb8611ec650dfc4ec947c6d4513da92cf`, com a árvore
+limpa durante as medições. As três rodadas apontam para o mesmo hash dos dez
 fontes de carga/configuração:
-`ad9d6c41b7917eccbd9a29e8a80fe31277b904a9f6f1b32099b304156d78c1d1`.
+`c99c4ac6e9f568ae3a718b9e0bff973b3a143a355875fbe85e9d4a420e4dd9de`.
 Esse hash identifica os arquivos enumerados em `scripts/load-test.ts`; o ID Docker
 identifica a imagem da aplicação. Ele não é um hash de todo o repositório.
 
@@ -155,19 +166,19 @@ As três rodadas abaixo passaram integralmente. As contagens financeiras incluem
 
 | Rodada | runId | Início → fim, UTC em 01/11/2026 | Duração, s | Transações = entradas no ledger | Eventos distintos |
 | --- | --- | --- | ---: | ---: | ---: |
-| A | `2026-11-01T06-54-45-433Z-36e8cf6c` | 06:54:45.493 → 07:34:44.245 | 2.398,752 | 91.606 | 183.212 |
-| B | `2026-11-01T07-35-00-374Z-8e545fa0` | 07:35:00.438 → 08:14:51.018 | 2.390,58 | 91.765 | 183.530 |
-| C | `2026-11-01T08-15-07-216Z-c711bca9` | 08:15:07.297 → 08:54:46.607 | 2.379,31 | 91.722 | 183.444 |
+| A | `2026-11-01T09-08-31-505Z-33137235` | 09:08:31.571 → 09:48:03.636 | 2.372,065 | 91.225 | 182.450 |
+| B | `2026-11-01T09-48-21-364Z-684a5de9` | 09:48:21.440 → 10:28:20.320 | 2.398,88 | 91.576 | 183.152 |
+| C | `2026-11-01T10-28-36-009Z-160b3ad6` | 10:28:36.069 → 11:08:30.554 | 2.394,485 | 91.529 | 183.058 |
 
 Em todas: 1.001 carteiras reconciliadas, 10.000 registros inbox concluídos, nenhuma outbox pendente, nenhuma mensagem na DLQ e nenhum efeito financeiro duplicado. Os oito processos tiveram participação positiva depois da seed. Cada prova final passou com 2.006 asserções.
 
 | Rodada | ID registrado da imagem da aplicação |
 | --- | --- |
-| A | `sha256:baa379a60ea0ea02cccfc36dbbc6ac722236e56990365f18a20815df1ce86694` |
-| B | `sha256:6cba84b5ced8a3d95c56df3b509b564c32a0a66cc37ae6ad677cf5ceba4e4ef5` |
-| C | `sha256:8d03692059e04a1e508171ed7b2901f08b6c0cd34a2ebfc2625ca629e26b478a` |
+| A | `sha256:2cf25c28245897624f40daf832fefab17e35f077fabd8c63ca6645cd0fd465c6` |
+| B | `sha256:fbe8d13ea040127e0a783ab0fb620bdf9cc8b21677b8e33f1f88b1aba8371cfa` |
+| C | `sha256:2cf25c28245897624f40daf832fefab17e35f077fabd8c63ca6645cd0fd465c6` |
 
-Os IDs diferem; a inspeção dos três IDs mostrou as mesmas onze camadas de arquivos e rótulos de serviço Compose diferentes (`api`, `consumer`, `worker`). As medições usam os mesmos fontes e arquivos de aplicação, mas os IDs completos não são apresentados como idênticos.
+A e C registraram o mesmo ID, com rótulo Compose `bootstrap`; B registrou outro ID, com rótulo `api`. A inspeção desses IDs confirmou as mesmas onze camadas de arquivos, na mesma ordem. Os IDs completos e os rótulos são metadados distintos; a equivalência das camadas foi verificada separadamente do hash dos fontes.
 
 ### HTTP por rodada
 
@@ -175,37 +186,37 @@ As taxas são as médias dos contadores emitidas pelo k6. Os percentis são do c
 
 | Rodada | Fase / workload | Sucessos HTTP | Requisições/s | p50, ms | p95, ms | p99, ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| A | `hot_wallet` / hot | 15.481 | 127,811 | 24,594 | 1.220,535 | 1.280,833 |
-| A | `distributed_wallets` / distributed | 18.592 | 154,907 | 7,224 | 460,935 | 945,372 |
-| A | `replays` / distributed | 16.942 | 141,165 | 4,965 | 8,086 | 13,922 |
-| A | `replays` / replay | 1.882 | 15,681 | 3,05 | 5,267 | 8,061 |
-| A | `hot_plus_distributed` / hot | 14.519 | 119,591 | 125,395 | 1.459,394 | 1.556,325 |
-| A | `hot_plus_distributed` / distributed | 15.051 | 123,973 | 169,428 | 1.322,071 | 1.425,433 |
-| B | `hot_wallet` / hot | 15.514 | 128,112 | 122,603 | 1.217,967 | 1.266,829 |
-| B | `distributed_wallets` / distributed | 18.824 | 156,846 | 4,91 | 8,643 | 18,192 |
-| B | `replays` / distributed | 16.942 | 141,166 | 4,928 | 8,407 | 18,446 |
-| B | `replays` / replay | 1.882 | 15,681 | 3,027 | 5,343 | 13,079 |
-| B | `hot_plus_distributed` / hot | 14.479 | 119,507 | 114,304 | 1.452,638 | 1.527,67 |
-| B | `hot_plus_distributed` / distributed | 14.985 | 123,683 | 87,033 | 1.317,948 | 1.388,694 |
-| C | `hot_wallet` / hot | 15.553 | 128,431 | 24,959 | 1.226,749 | 1.296,409 |
-| C | `distributed_wallets` / distributed | 18.796 | 156,611 | 5,106 | 72,787 | 212,614 |
-| C | `replays` / distributed | 16.942 | 141,153 | 4,968 | 7,879 | 12,017 |
-| C | `replays` / replay | 1.882 | 15,68 | 3,06 | 4,811 | 7,597 |
-| C | `hot_plus_distributed` / hot | 14.431 | 119,053 | 93,377 | 1.472,963 | 1.628,028 |
-| C | `hot_plus_distributed` / distributed | 14.979 | 123,574 | 19,596 | 1.333,568 | 1.482,312 |
+| A | `hot_wallet` / hot | 15.352 | 126,656 | 233,34 | 1.248,21 | 1.311,012 |
+| A | `distributed_wallets` / distributed | 18.446 | 153,694 | 6,511 | 476,567 | 1.494,363 |
+| A | `replays` / distributed | 16.942 | 141,161 | 4,948 | 8,298 | 13,536 |
+| A | `replays` / replay | 1.882 | 15,681 | 3,04 | 4,745 | 7,107 |
+| A | `hot_plus_distributed` / hot | 14.476 | 119,429 | 48,826 | 1.477,019 | 1.576,369 |
+| A | `hot_plus_distributed` / distributed | 14.988 | 123,653 | 8,34 | 1.346,889 | 1.429,285 |
+| B | `hot_wallet` / hot | 15.469 | 127,648 | 151,536 | 1.220,75 | 1.298,436 |
+| B | `distributed_wallets` / distributed | 18.824 | 156,837 | 4,951 | 8,436 | 13,437 |
+| B | `replays` / distributed | 16.942 | 141,164 | 4,942 | 9,132 | 16,112 |
+| B | `replays` / replay | 1.882 | 15,681 | 3,048 | 6,084 | 13,988 |
+| B | `hot_plus_distributed` / hot | 14.396 | 118,778 | 54,835 | 1.494,705 | 1.574,399 |
+| B | `hot_plus_distributed` / distributed | 14.924 | 123,134 | 59,019 | 1.361,475 | 1.424,784 |
+| C | `hot_wallet` / hot | 15.481 | 127,849 | 40,44 | 1.232,973 | 1.305,34 |
+| C | `distributed_wallets` / distributed | 18.824 | 156,836 | 4,935 | 8,793 | 18,635 |
+| C | `replays` / distributed | 16.943 | 141,157 | 4,948 | 8,785 | 18,559 |
+| C | `replays` / replay | 1.882 | 15,68 | 3,043 | 5,482 | 10,893 |
+| C | `hot_plus_distributed` / hot | 14.378 | 118,478 | 165,718 | 1.518,915 | 1.620,537 |
+| C | `hot_plus_distributed` / distributed | 14.882 | 122,631 | 89,611 | 1.383,864 | 1.478,067 |
 
-Todas as requisições iniciadas nessas rodadas corresponderam a 200 esperado e as checagens de contrato passaram. A taxa observada de status inesperado foi zero. As séries `backpressure_*` estavam ausentes e os contadores de sucessos igualaram os de requisições: nenhum 503 foi observado. Não houve reenvio de recuperação. Cada fase de replay teve 1.882 replays e 16.942 comandos novos.
+Todas as requisições iniciadas nessas rodadas corresponderam a 200 esperado e as checagens de contrato passaram. A taxa observada de status inesperado foi zero. As séries `backpressure_*` estavam ausentes e os contadores de sucessos igualaram os de requisições: nenhum 503 foi observado. Não houve reenvio de recuperação. As quantidades de replays e comandos novos são as mostradas por workload na tabela.
 
 ### Carga entregue e drenagem residual
 
 | Fase | Requisições iniciadas A / B / C | Iterações descartadas A / B / C | Pico de VUs A / B / C | Drenagem outbox A / B / C, s |
 | --- | ---: | ---: | ---: | ---: |
-| `hot_wallet` | 15.481 / 15.514 / 15.553 | 3.343 / 3.310 / 3.271 | 300 / 300 / 300 | 106,33 / 104,452 / 104,422 |
-| `distributed_wallets` | 18.592 / 18.824 / 18.796 | 232 / 0 / 28 | 243 / 8 / 35 | 339,23 / 343,144 / 342,03 |
-| `replays` | 18.824 / 18.824 / 18.824 | 0 / 0 / 0 | 8 / 12 / 4 | 321,86 / 321,355 / 319,571 |
-| `hot_plus_distributed` | 29.570 / 29.464 / 29.410 | 8.078 / 8.184 / 8.238 | 600 / 600 / 600 | 728,561 / 722,895 / 717,058 |
+| `hot_wallet` | 15.352 / 15.469 / 15.481 | 3.473 / 3.355 / 3.343 | 300 / 300 / 300 | 101,977 / 104,964 / 104,513 |
+| `distributed_wallets` | 18.446 / 18.824 / 18.824 | 378 / 0 / 0 | 300 / 5 / 12 | 336,627 / 344,127 / 344,092 |
+| `replays` | 18.824 / 18.824 / 18.825 | 0 / 0 / 0 | 4 / 4 / 17 | 318,734 / 322,792 / 323,035 |
+| `hot_plus_distributed` | 29.464 / 29.320 / 29.260 | 8.184 / 8.328 / 8.388 | 600 / 600 / 600 | 718,485 / 724,531 / 721,211 |
 
-Cada fase simples programou 18.824 iterações; a mista programou 37.648. Descartes não chegaram à aplicação. Em A, a fase distribuída teve descartes mesmo com pico observado de 243 VUs, abaixo do máximo de 300; sua causa não foi demonstrada como esgotamento desse teto.
+O total programado em cada resumo é a soma de iterações iniciadas e descartadas; o scheduler pode variar uma iteração entre as rampas. Descartes não chegaram à aplicação. O pico de VUs e os descartes de cada rodada permanecem explícitos, sem atribuir toda perda de chegada a uma única causa.
 
 ### Backlog SQS
 
@@ -213,13 +224,13 @@ Cada fase simples programou 18.824 iterações; a mista programou 37.648. Descar
 | --- | ---: | ---: | ---: |
 | Comandos novos | 10.000 | 10.000 | 10.000 |
 | Grupos FIFO | 1.000 | 1.000 | 1.000 |
-| Envio pelo produtor, s | 87,001 | 86,845 | 86,16 |
-| Taxa média de envio, comandos/s | 114,941 | 115,148 | 116,063 |
-| Conclusão após último envio, s | 173,272 | 172,082 | 169,818 |
-| Início do produtor até processamento SQL e fila de entrada vazia, s | 260,273 | 258,927 | 255,978 |
-| Pico amostrado do backlog de entrada | 7.110 | 7.100 | 7.110 |
-| Drenagem residual da outbox SQS, s | 108,123 | 109,625 | 106,853 |
-| Soma das cinco drenagens residuais, s | 1.604,104 | 1.601,471 | 1.589,934 |
+| Envio pelo produtor, s | 85,809 | 87,654 | 87,205 |
+| Taxa média de envio, comandos/s | 116,538 | 114,085 | 114,672 |
+| Conclusão após último envio, s | 170,639 | 173,583 | 172,057 |
+| Início do produtor até processamento SQL e fila de entrada vazia, s | 256,448 | 261,237 | 259,262 |
+| Pico amostrado do backlog de entrada | 7.130 | 7.110 | 7.140 |
+| Drenagem residual da outbox SQS, s | 110,125 | 110,378 | 108,134 |
+| Soma das cinco drenagens residuais, s | 1.585,948 | 1.606,792 | 1.600,985 |
 
 A conclusão SQS combina todas as operações em `PROCESSED` com a fila de entrada vazia. O envio e o consumo se sobrepõem. O intervalo após o último envio não é throughput isolado do consumer nem percentil por mensagem. Ele inclui a espera pelo commit e depois pelos acks; a proximidade de 180 s não equivale à folga exata de um único prazo. Os histogramas dos consumers medem a tentativa após a entrega e excluem a espera na fila.
 
@@ -229,30 +240,30 @@ Os artefatos citados são `load/results/<runId>/environment.json`, `result.json`
 
 Os valores abaixo são taxas móveis de 30 s no mesmo ponto final de cada fase.
 Os percentis do servidor são estimativas dos buckets, em ms. A fase hot termina
-em 06:57:26.848 UTC, a mista em 07:16:17.790 e a SQS em 07:32:48.791.
+em 09:11:11.405 UTC, a mista em 09:29:52.478 e a SQS em 09:46:08.171.
 Os primeiros 30 s de cada intervalo foram excluídos. As séries terminam antes
 da drenagem residual. IDs de rede pertencem apenas a essa stack.
 
 | Fase / réplica | Novas transações/s ou eventos/s | Processamento p50 / p95 / p99, ms | Espera de lock p50 / p95 / p99, ms |
 | --- | ---: | --- | --- |
-| Hot / API `10.250.1.11:3000` | 85,04 tx/s | 1.330,605 / 1.933,060 / 1.986,612 | 157,361 / 240,736 / 248,147 |
-| Hot / API `10.250.1.14:3000` | 84,56 tx/s | 1.322,001 / 1.932,200 / 1.986,440 | 157,237 / 240,724 / 248,145 |
-| Hot / API `10.250.1.8:3000` | 84,20 tx/s | 1.168,641 / 1.916,864 / 1.983,373 | 152,379 / 240,238 / 248,048 |
-| Hot / worker `10.250.1.12:3000` | 88,40 eventos/s | N/A | N/A |
-| Hot / worker `10.250.1.9:3000` | 86,80 eventos/s | N/A | N/A |
-| Mista / API `10.250.1.11:3000` | 153,92 tx/s | 1.436,768 / 1.943,677 / 1.988,735 | 1,627 / 230,543 / 246,610 |
-| Mista / API `10.250.1.14:3000` | 154,04 tx/s | 1.389,312 / 1.938,931 / 1.987,786 | 1,627 / 231,167 / 247,059 |
-| Mista / API `10.250.1.8:3000` | 156,24 tx/s | 1.441,681 / 1.944,168 / 1.988,834 | 1,000 / 230,459 / 246,760 |
-| Mista / worker `10.250.1.12:3000` | 28,80 eventos/s | N/A | N/A |
-| Mista / worker `10.250.1.9:3000` | 28,40 eventos/s | N/A | N/A |
-| SQS / consumer `10.250.1.10:3000` | 14,80 tx/s | 30,000 / 48,000 / 49,600 | 4,877 / 9,488 / 9,898 |
-| SQS / consumer `10.250.1.13:3000` | 15,20 tx/s | 30,000 / 48,000 / 49,600 | 4,203 / 9,420 / 9,884 |
-| SQS / consumer `10.250.1.7:3000` | 15,20 tx/s | 30,000 / 48,000 / 49,600 | 4,639 / 9,464 / 9,893 |
-| SQS / worker `10.250.1.12:3000` | 28,40 eventos/s | N/A | N/A |
-| SQS / worker `10.250.1.9:3000` | 28,40 eventos/s | N/A | N/A |
+| Hot / API `10.250.1.12:3000` | 83,60 tx/s | 1.295,822 / 1.929,582 / 1.985,916 | 155,990 / 240,924 / 248,474 |
+| Hot / API `10.250.1.13:3000` | 84,28 tx/s | 1.258,099 / 1.925,810 / 1.985,162 | 155,487 / 240,549 / 248,110 |
+| Hot / API `10.250.1.9:3000` | 83,96 tx/s | 1.272,696 / 1.927,270 / 1.985,454 | 155,857 / 240,747 / 248,293 |
+| Hot / worker `10.250.1.10:3000` | 83,60 eventos/s | N/A | N/A |
+| Hot / worker `10.250.1.7:3000` | 82,80 eventos/s | N/A | N/A |
+| Mista / API `10.250.1.12:3000` | 150,52 tx/s | 1.345,565 / 1.934,557 / 1.986,911 | 2,382 / 231,162 / 247,259 |
+| Mista / API `10.250.1.13:3000` | 151,96 tx/s | 1.343,415 / 1.934,342 / 1.986,868 | 2,286 / 231,124 / 248,101 |
+| Mista / API `10.250.1.9:3000` | 154,32 tx/s | 1.307,361 / 1.930,736 / 1.986,147 | 2,480 / 230,271 / 247,195 |
+| Mista / worker `10.250.1.10:3000` | 28,00 eventos/s | N/A | N/A |
+| Mista / worker `10.250.1.7:3000` | 28,40 eventos/s | N/A | N/A |
+| SQS / consumer `10.250.1.11:3000` | 15,20 tx/s | 30,000 / 48,000 / 49,600 | 4,430 / 9,443 / 9,889 |
+| SQS / consumer `10.250.1.14:3000` | 15,20 tx/s | 30,000 / 48,000 / 49,600 | 4,880 / 9,488 / 9,898 |
+| SQS / consumer `10.250.1.8:3000` | 15,20 tx/s | 30,000 / 48,000 / 49,600 | 4,722 / 9,472 / 9,894 |
+| SQS / worker `10.250.1.10:3000` | 28,40 eventos/s | N/A | N/A |
+| SQS / worker `10.250.1.7:3000` | 28,80 eventos/s | N/A | N/A |
 
-Somando apenas os pontos alinhados, as APIs fizeram 253,80 tx/s no fim de hot e
-464,20 tx/s no fim da fase mista; os consumers fizeram 45,20 tx/s no fim de SQS.
+Somando apenas os pontos alinhados, as APIs fizeram 251,84 tx/s no fim de hot e
+456,80 tx/s no fim da fase mista; os consumers fizeram 45,60 tx/s no fim de SQS.
 Esses valores não são médias da fase nem patamares sustentados. Os histogramas das
 APIs na fase mista combinam as duas carteiras de trabalho. A interpolação dos buckets
 e a janela de 30 s impedem comparar diretamente esses percentis com os percentis
@@ -264,13 +275,16 @@ papéis ativos tiveram razão observada zero e a taxa de falha de publicação f
 As séries móveis e cumulativas de conflito de lock estavam ausentes: não houve série
 observada, o que não equivale a uma medição numérica de zero conflitos. Houve espera
 normal de lock, como mostram os histogramas. O máximo amostrado de lag compartilhado
-foi 23,417454 s em hot, 65,045012 s na fase mista e 78,902659 s em SQS. Esses números
+foi 22,871670 s em hot, 63,607897 s na fase mista e 78,158084 s em SQS. Esses números
 cobrem as janelas de tráfego registradas, não o máximo durante a drenagem posterior.
+Razões de erro NaN nos canais ociosos também não são medições de zero.
 
-Os snapshots finais comprovaram trabalho em todas as três APIs, três consumers e dois
-workers depois da seed. Na execução A, os consumers terminaram com 3.330, 3.330 e
-3.340 tentativas SQS; os workers com 91.543 e 91.669 confirmações de publicação.
-As contagens de participação não substituem os totais financeiros exatos no SQL.
+Os snapshots finais mostraram contadores positivos em todas as três APIs, três
+consumers e dois workers. Na execução A, os consumers terminaram com 3.330, 3.320 e
+3.350 tentativas SQS; os workers com 90.877 e 91.573 confirmações de publicação.
+Baselines existentes mostraram incrementos positivos; séries iniciais ausentes
+permanecem ausentes. As janelas de tráfego confirmam as três APIs e os três consumers
+ativos. As contagens de participação não substituem os totais financeiros exatos no SQL.
 
 ### Análise e alcance
 
@@ -287,8 +301,8 @@ outras carteiras. A grande variação entre os percentis distribuídos das rodad
 precisa permanecer visível; ela não estabelece um SLO nem tem causa demonstrada.
 
 A publicação ficou atrás da criação de eventos durante partes da carga e exigiu
-drenagens residuais longas. Na execução A, as cinco drenagens somaram 1.604,104 s,
-cerca de 26 min 44 s dos 39 min 59 s totais. O relatório separa esse tempo da latência
+drenagens residuais longas. Na execução A, as cinco drenagens somaram 1.585,948 s,
+cerca de 26 min 26 s dos 39 min 32 s totais. O relatório separa esse tempo da latência
 do endpoint e do esvaziamento da fila de entrada. MiniStack, PostgreSQL, geradores e
 aplicação compartilham o host; sem uma análise causal isolada, esses números não
 determinam o limite de SQS gerenciado ou de cada componente de produção.
@@ -307,4 +321,4 @@ capacidade de um PostgreSQL de produção ou estabilidade por horas. Os recursos
 pelo Docker não representam recursos exclusivos do processo. O limite de VUs e as rampas
 precisam ser considerados ao atribuir saturação à aplicação. A correção financeira é
 verificada no estado final; os cenários determinísticos de crash e indisponibilidade ficam
-na suíte `test:failure`.
+nas suítes `test:concurrency` e `test:failure`.
