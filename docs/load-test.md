@@ -356,11 +356,11 @@ de outbox vazia é independente desses gauges.
 
 ### Hipóteses causais ainda não demonstradas
 
-Reduzir as atualizações individuais pode reduzir o tempo de reserva e confirmação.
-O ganho depende da fração real do ciclo consumida nesses estágios; reduzir o número
-de SQLs não garante reduzir a drenagem na mesma proporção. A extensão mede separadamente
-reserva com commit, chamada SDK ao SQS e confirmação com commit antes de decidir
-se essa intervenção compensa.
+A hipótese inicial era que reduzir as atualizações individuais diminuiria o tempo de
+reserva e confirmação. A comparação controlada abaixo mediu separadamente reserva
+com commit, chamada SDK ao SQS e confirmação com commit. A redução de SQL ocorreu,
+mas o ganho de drenagem não satisfez o critério declarado. Isso não demonstra que
+as atualizações individuais expliquem as drenagens históricas.
 
 O crescimento de dados retidos pelo emulador e o trabalho de amostragem de filas
 podem afetar o custo local. A sequência fixa das fases também faz o tempo decorrido,
@@ -398,12 +398,108 @@ uma taxa de pico e um percentil da fase não estima tempo de serviço ou espera 
 
 ### Oportunidades com benefício ainda não medido
 
-Atualizações de reserva/confirmação em lote são a primeira candidata, condicionada
-ao custo observado dos estágios. Aumentar publishers, pools ou recursos não foi aceito
+A candidata de atualizações de reserva/confirmação em lote foi medida e descartada,
+conforme a comparação abaixo. Aumentar publishers, pools ou recursos não foi aceito
 por inspeção: exige ganho consistente, custo explícito e efeito sobre HTTP sob a mesma
 taxa total. Patamares constantes de hot, distribuída e mista permitiriam separar esse
 efeito da diferença de carga das rampas. Nenhuma dessas possibilidades é apresentada
 como melhoria observada nas rodadas históricas.
+
+### Experiência controlada de persistência em lote da outbox
+
+A campanha local `outbox-comparison-1` terminou com seis braços válidos na ordem
+B,C / C,B / B,C. Baseline: `66660b9cec0c38ee241d5332f3630d5022430ceb`; candidata: `39d4b89bf60df533cb16706e0f133356225919b8`.
+Cada braço usou dados novos, 10.000 carteiras, 40.000 eventos, dois processos publishers,
+lote dez, pool máximo dez por processo, lease de 15 s e retry máximo de 300 s.
+PostgreSQL e MiniStack tiveram as mesmas imagens efetivas em todos os braços;
+nenhum worker, pool, CPU ou memória foi acrescentado. O host local não era exclusivo.
+Fontes, imagens e os quatro instrumentos ficaram congelados até a saída real do coordenador.
+
+O critério foi declarado antes da comparação: mediana de ganho de drenagem de pelo
+menos 15% e ganho de pelo menos 10% em **cada** par, além de correção integral e
+custo justificável. A contagem de SQLs e o uso de CPU são evidências do mecanismo;
+não substituem esse critério depois de observar o resultado.
+
+| Braço, em ordem de execução | Drenagem, s | Chamadas SQL não vazias + vazias | CPU dos publishers, µs/evento | Após go p50 / p95 / p99, s |
+| --- | ---: | ---: | ---: | ---: |
+| 01-baseline | 200,749 | 108.000 + 8 | 651,853 | 41,036 / 179,125 / 196,221 |
+| 02-candidate | 183,829 | 36.000 + 8 | 407,640 | 36,464 / 163,529 / 179,497 |
+| 03-candidate | 180,083 | 36.000 + 8 | 397,484 | 37,158 / 159,949 / 175,689 |
+| 04-baseline | 186,417 | 108.000 + 8 | 621,485 | 38,402 / 166,209 / 182,252 |
+| 05-baseline | 233,293 | 108.000 + 8 | 692,570 | 41,015 / 206,815 / 228,080 |
+| 06-candidate | 198,209 | 36.000 + 8 | 412,635 | 40,073 / 175,569 / 193,478 |
+
+| Par predefinido | Braços baseline / candidata | Baseline, s | Candidata, s | Ganho de drenagem |
+| --- | --- | ---: | ---: | ---: |
+| 1 | 01-baseline / 02-candidate | 200,749 | 183,829 | 8,428546% |
+| 2 | 04-baseline / 03-candidate | 186,417 | 180,083 | 3,397665% |
+| 3 | 05-baseline / 06-candidate | 233,293 | 198,209 | 15,038269% |
+
+A mediana é **8,428546%**. A candidata **não passou**
+o critério de benefício. Seus dois arquivos de produção foram restaurados no commit
+`eb3fcf2`, com identidade de bytes confirmada contra o baseline. O resultado e a
+regressão de falha SQL após envio foram preservados; as medições da candidata
+continuam associadas à fonte experimental, sem atribuí-las à implementação retida.
+
+| Braço | Reserva Σ, s | Envio SDK Σ, s | Confirmação Σ, s | p95 reserva / envio / confirmação, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 01-baseline | 19,347 | 366,563 | 14,610 | 7,029 / 207,009 / 5,134 |
+| 02-candidate | 9,621 | 344,227 | 12,692 | 3,538 / 192,148 / 10,875 |
+| 03-candidate | 9,273 | 339,803 | 9,998 | 3,102 / 188,536 / 7,893 |
+| 04-baseline | 18,602 | 336,792 | 16,394 | 6,505 / 184,191 / 10,422 |
+| 05-baseline | 22,232 | 422,461 | 20,636 | 9,552 / 248,373 / 13,519 |
+| 06-candidate | 9,588 | 377,898 | 7,946 | 3,565 / 205,564 / 2,691 |
+
+As somas agregam dois processos sobrepostos e não devem ser somadas à drenagem de
+parede. Cada reserva/confirmação inclui sua transação até commit; envio mede o wrapper
+do SDK, fora dessas transações. No baseline completo foram observadas 14 chamadas na
+reserva e 13 na confirmação; na candidata, cinco e quatro. As oito chamadas dos dois
+ciclos vazios ficam separadas. A redução de 66,67% dessas chamadas é real; a redução
+de drenagem não atingiu o limiar e a cauda de confirmação não melhorou uniformemente.
+
+Todos os braços confirmaram e receberam os 40.000 IDs, tiveram 40.000 efeitos únicos,
+uma tentativa normal por outbox e por SDK, fila de eventos vazia e reconciliação das
+10.000 carteiras com ledger global consistente. Esses checks ocorreram fora da janela
+de drenagem; não há tráfego HTTP nem consumidor concorrente nessa janela.
+O seed é excluído da drenagem. Após go mede o retorno do envio antes da confirmação
+SQL; idade desde ocorrência inclui o seed e está preservada nos artefatos. Nenhuma
+medida é latência HTTP ou capacidade sustentada. CPU cobre recebimento de go até
+shutdown dos filhos; RSS de início/fim e pico lifetime não são uma série da drenagem.
+A amostragem Docker/SQL é esparsa, e amostras posteriores à drenagem estão identificadas.
+As duas versões usam os mesmos wrappers, mas o custo da instrumentação por chamada
+não foi quantificado; reduzir chamadas também reduz esse trabalho do observador.
+O ganho observado pertence a esse experimento instrumentado, sem extrapolação automática.
+
+O piloto único, menor, serviu somente para justificar medir a hipótese SQL. Ele e o
+benchmark diagnóstico recebido da revisão externa não entram nestas tabelas. Os
+snapshots do protocolo, instrumentos, manifestos, linhas por lote, recursos e resultados
+integrais permanecem associados a `outbox-comparison-1` nos registros externos.
+Não houve retry, exclusão de rodada nem seleção de resultado favorável.
+
+### Hipóteses e oportunidades depois da comparação
+
+O envio SDK ocupa a maior parte dos ciclos com este backlog de 40.000 eventos. Isso
+não distingue tempo de servidor, SDK, rede ou scheduling, nem identifica qual função
+do MiniStack foi responsável. A análise descritiva dos dois primeiros braços encontrou
+crescimento de latência entre o primeiro e o último quartil de lotes; o destino também
+acumulava mensagens e o tempo transcorria. Esses fatores não foram isolados.
+O código oficial do MiniStack sugere trabalho ligado aos dados retidos e às consultas
+de atributos, mas equivalência com os bytes da imagem e contribuição causal exigem
+provas próprias. Não foi aceito aumento de publishers, pools ou recursos por esse indício.
+
+Na carteira concentrada, a inspeção encontrou oito chamadas de negócio no UOW HTTP
+normal com movimento, sete depois de adquirir o lock, sem SQS/HTTP dentro da seção
+protegida. Agrupar os dois inserts adjacentes de outbox poderia reduzir oito para sete;
+não foi medido nem implementado. Evitar uma consulta de reversão não utilizada por
+WIN/LOSS com referência é outra oportunidade de fonte, fora da carga publicada sem
+referências. A serialização por carteira continua necessária. As métricas existentes
+não medem tempo retendo lock nem fila de checkout do pool; a causa da variação
+entre as rodadas distribuídas permanece sem isolamento.
+
+A comparação HTTP a taxa constante estava condicionada à aprovação desta candidata.
+Como o gate de drenagem falhou, seus instrumentos preparados não foram executados;
+não há resultado HTTP antes/depois dessa alteração. A hipótese SQL não originou uma
+campanha aberta de tuning nem uma segunda alteração de aplicação sem custo demonstrado.
 
 ## Limites da interpretação
 
