@@ -19,11 +19,14 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
   if (role !== "api" && role !== "consumer" && role !== "worker") {
     throw new Error("Invalid configuration: APP_ROLE");
   }
-  const sqsEndpoint = required("SQS_ENDPOINT");
-  try {
-    if (!["http:", "https:"].includes(new URL(sqsEndpoint).protocol)) throw new Error();
-  } catch {
-    throw new Error("Invalid configuration: SQS_ENDPOINT");
+  function url(name: string): string {
+    const value = required(name);
+    try {
+      if (!["http:", "https:"].includes(new URL(value).protocol)) throw new Error();
+    } catch {
+      throw new Error(`Invalid configuration: ${name}`);
+    }
+    return value;
   }
   return Object.freeze({
     role: role as AppRole,
@@ -36,13 +39,14 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
       password: required("DB_PASSWORD"),
     }),
     sqs: Object.freeze({
-      endpoint: sqsEndpoint,
+      endpoint: url("SQS_ENDPOINT"),
       region: required("AWS_REGION"),
       credentials: Object.freeze({
         accessKeyId: required("AWS_ACCESS_KEY_ID"),
         secretAccessKey: required("AWS_SECRET_ACCESS_KEY"),
       }),
     }),
+    auth: Object.freeze({ issuer: url("AUTH_ISSUER"), jwksUrl: url("AUTH_JWKS_URL") }),
   });
 }
 

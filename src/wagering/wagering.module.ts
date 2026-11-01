@@ -12,6 +12,7 @@ import { ReconcileWallet, WageringQueries } from "./application/queries";
 import { ResolvePendingTransaction } from "./application/resolve-pending-transaction";
 import { SettlementWriter } from "./application/settlement-writer";
 import { SubmitWagerTransaction } from "./application/submit-wager-transaction";
+import { WageringController } from "./http/wagering.controller";
 import { SqlReconciliationRepository } from "./infrastructure/reconciliation";
 import {
   SqlLedgerRepository,
@@ -21,6 +22,7 @@ import {
 
 @Module({
   imports: [MessagingPersistenceModule],
+  controllers: [WageringController],
   providers: [
     { provide: WalletRepository, useClass: SqlWalletRepository },
     { provide: WagerTransactionRepository, useClass: SqlWagerTransactionRepository },

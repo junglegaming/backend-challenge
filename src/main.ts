@@ -1,11 +1,11 @@
 import "reflect-metadata";
 import { hostname } from "node:os";
-import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify";
 import pino from "pino";
 import { AppModule } from "./app.module";
 import { Configuration } from "./config/config";
+import { configureHttp } from "./shared/http/configure-http";
 
 const logger = pino();
 try {
@@ -15,14 +15,7 @@ try {
     abortOnError: false,
   });
   const config = app.get(Configuration).values;
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: { enableImplicitConversion: false },
-    }),
-  );
+  configureHttp(app);
   app.enableShutdownHooks();
   await app.listen(config.port, "0.0.0.0");
   logger.info({ event: "application_started", role: config.role, instanceId: hostname() });

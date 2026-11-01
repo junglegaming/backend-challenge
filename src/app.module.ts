@@ -1,12 +1,14 @@
 import { Module } from "@nestjs/common";
+import { IdentityModule } from "./identity/identity.module";
 import { Dependencies } from "./observability/health/dependencies";
 import { HealthController } from "./observability/health/health.controller";
+import { MetricsController } from "./observability/metrics.controller";
 import { DatabaseModule } from "./shared/infrastructure/database.module";
 import { WageringModule } from "./wagering/wagering.module";
 
 @Module({
-  imports: [DatabaseModule, WageringModule],
-  controllers: [HealthController],
+  imports: [DatabaseModule, IdentityModule, WageringModule],
+  controllers: [HealthController, MetricsController],
   providers: [Dependencies],
 })
 export class AppModule {}

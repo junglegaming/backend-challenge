@@ -6,5 +6,8 @@
     "enabled": true,
     "rules": { "preset": "recommended", "style": { "useImportType": "off" } }
   },
-  "javascript": { "formatter": { "quoteStyle": "double" } }
+  "javascript": {
+    "parser": { "unsafeParameterDecoratorsEnabled": true },
+    "formatter": { "quoteStyle": "double" }
+  }
 }

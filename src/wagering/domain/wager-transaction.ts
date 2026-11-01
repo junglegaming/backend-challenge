@@ -78,7 +78,7 @@ export class WagerTransaction {
       invalid();
     if (
       typeof props.idempotencyKey !== "string" ||
-      !/^[!-~]{1,256}$/.test(props.idempotencyKey) ||
+      !/^[\x20-\x7e]{1,255}$/.test(props.idempotencyKey) ||
       !/^[a-f0-9]{64}$/.test(props.payloadHash)
     )
       invalid();
