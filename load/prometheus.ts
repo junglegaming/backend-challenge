@@ -4,6 +4,8 @@ export interface PromSeries {
 }
 
 const endpoint = "http://127.0.0.1:19090/api/v1";
+export const healthyScrapeTimestamps =
+  'timestamp(up{job="wagering"}) and (up{job="wagering"} == 1)';
 async function query(path: string, parameters: Record<string, string>) {
   const response = await fetch(`${endpoint}/${path}?${new URLSearchParams(parameters)}`, {
     signal: AbortSignal.timeout(10_000),
@@ -17,8 +19,11 @@ async function query(path: string, parameters: Record<string, string>) {
   return body.data.result;
 }
 
-export function instant(expression: string) {
-  return query("query", { query: expression });
+export function instant(expression: string, timeSeconds?: number) {
+  return query("query", {
+    query: expression,
+    ...(timeSeconds === undefined ? {} : { time: String(timeSeconds) }),
+  });
 }
 
 export async function phaseMetrics(startedAt: number, endedAt: number) {

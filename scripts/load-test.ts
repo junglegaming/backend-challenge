@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { LoadFixtures, loadCommand, parallelEach, Workload } from "../load/model";
-import { instant, phaseMetrics } from "../load/prometheus";
+import { healthyScrapeTimestamps, instant, phaseMetrics } from "../load/prometheus";
 import {
   assertResponseOutcome,
   parseResponseEvidence,
@@ -261,7 +261,7 @@ try {
     await pollUntil(
       "fresh scrape from all eight replicas",
       async () => {
-        const stamps = await instant('timestamp(up{job="wagering"} == 1)');
+        const stamps = await instant(healthyScrapeTimestamps);
         return stamps.length === 8 && stamps.every((series) => Number(series.value[1]) >= fence);
       },
       20_000,

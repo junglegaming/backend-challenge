@@ -132,8 +132,10 @@ réplicas, nunca a soma. O lag publicado é o maior valor amostrado.
 `<fase>-counters.json` e `participation.json` guardam snapshots brutos. Contadores finais positivos
 nas três APIs, três consumers e dois workers, comparados aos baselines existentes,
 comprovam participação; as séries das janelas de tráfego confirmam trabalho após a seed.
-Uma série inicial ausente permanece ausente na interpretação, sem delta medido inventado. Um scrape posterior à conclusão evita tomar uma
-amostra antiga como resultado final. `verification.json` só existe com a prova financeira
+Uma série inicial ausente permanece ausente na interpretação, sem delta medido inventado.
+O runner atual exige que os oito alvos tenham uma coleta saudável posterior à conclusão.
+A implementação usada nas rodadas históricas A/B/C tinha uma limitação nessa barreira,
+descrita na análise complementar abaixo. `verification.json` só existe com a prova financeira
 aprovada; `result.json` com `passed: true` só é escrito depois de todas as verificações.
 O contador de publicação mede confirmações e pode repetir um mesmo evento em retries
 permitidos pelo contrato at-least-once. A quantidade exata de eventos distintos por
@@ -312,6 +314,96 @@ financeira, inbox concluído e as 1.001 carteiras consistentes. Isso demonstra a
 correção observada nos workloads efetivamente executados. Falhas e crashes com
 sincronização determinística são cobertos pelas suítes de integração, concorrência
 e indisponibilidade; os resultados de carga não substituem essas provas.
+
+## Análise complementar da extensão de desempenho
+
+Esta análise foi iniciada depois das rodadas A/B/C, sem substituir seus resultados.
+A revisão externa `claude-load-analysis.md`, recebida em 01/11/2026 e preservada nos
+registros de execução, orientou perguntas; suas conclusões foram conferidas nos fontes
+e nos artefatos citados acima. Seu benchmark isolado de MiniStack é diagnóstico,
+com condições diferentes, e não integra nenhuma comparação antes/depois.
+
+### Fatos verificados
+
+O publisher reserva até dez eventos em uma transação SQL, envia um lote SQS fora
+dela e confirma os IDs aceitos em outra transação. Na implementação histórica,
+`claimDue` faz um `SELECT ... FOR UPDATE SKIP LOCKED` e um `UPDATE` por evento para
+persistir a tentativa e o próximo instante; a confirmação também faz um `UPDATE`
+por ID aceito. Portanto, um lote completo, totalmente aceito, exige 21 submissões
+SQL de dados: uma seleção, dez reservas e dez confirmações. Isso exclui controle
+de transação e configuração da sessão. É uma contagem do caminho do código,
+não uma medição de seu custo ou demonstração de que ele explica a drenagem.
+
+A conferência da revisão externa corrigiu o recorte das séries: os primeiros
+30 s são excluídos a partir do início real da fase, as duas séries dos publishers
+são alinhadas e somadas e o lag compartilhado usa o máximo. Nesse recorte, a
+média dos pontos de publicação em hot é 168,693 / 165,246 / 167,352 eventos/s
+em A/B/C. Ela não é a média sobre toda a fase nem capacidade sustentada.
+Os máximos de lag na janela registrada são:
+
+| Fase | A, s | B, s | C, s |
+| --- | ---: | ---: | ---: |
+| Hot | 22,871670 | 22,789013 | 22,744591 |
+| Distribuída | 49,131490 | 49,382506 | 48,599806 |
+| Replays | 44,264064 | 45,749412 | 45,392453 |
+| Mista | 63,607897 | 64,301103 | 64,767271 |
+| Backlog SQS | 78,158084 | 79,703131 | 77,959727 |
+
+Os valores maiores encontrados nos primeiros pontos da fase seguinte pertencem
+à fronteira depois da drenagem anterior. Não são o máximo durante a fase anterior:
+não foram guardadas séries contínuas do interior dessas drenagens. A prova SQL
+de outbox vazia é independente desses gauges.
+
+### Hipóteses causais ainda não demonstradas
+
+Reduzir as atualizações individuais pode reduzir o tempo de reserva e confirmação.
+O ganho depende da fração real do ciclo consumida nesses estágios; reduzir o número
+de SQLs não garante reduzir a drenagem na mesma proporção. A extensão mede separadamente
+reserva com commit, chamada SDK ao SQS e confirmação com commit antes de decidir
+se essa intervenção compensa.
+
+O crescimento de dados retidos pelo emulador e o trabalho de amostragem de filas
+podem afetar o custo local. A sequência fixa das fases também faz o tempo decorrido,
+o volume acumulado e a carga variarem juntos. Correlação entre publicação mais lenta
+e fases posteriores não distingue esses fatores. Não há evidência que atribua a
+variação distribuída a MiniStack, PostgreSQL, MikroORM ou pool isoladamente.
+
+Na carteira concentrada, a serialização da linha protege a ordem das alterações de
+saldo. Esperar esse lock não demonstra trabalho evitável dentro da transação nem
+mede espera por conexão. A inspeção do caminho protegido orienta oportunidades;
+a sua remoção ou a troca por um cálculo concorrente sem proteção violaria o contrato.
+
+### Limitações descobertas no instrumento histórico
+
+A barreira antiga usava `timestamp(up == 1)`. A comparação interna podia colocar
+o horário de avaliação no resultado, permitindo que uma coleta anterior fosse
+considerada nova. O runner passou a usar `timestamp(up) and (up == 1)`, que conserva
+o timestamp real da amostra saudável. Uma regressão com o Prometheus real consulta
+um instante entre duas coletas observadas e confere os timestamps de todos os oito
+alvos; o controle com a expressão antiga reproduz o defeito.
+
+A correção é do instrumento, sem alteração da aplicação ou dos limites de aceitação.
+Ela não transforma A/B/C em resultados da versão corrigida nem invalida suas
+reconciliações SQL. Aquelas rodadas não provam a garantia de coleta nova que o runner
+pretendia impor; snapshots junto às fronteiras podem conter a última amostra antiga.
+Mesmo uma coleta nova pode exportar o último valor de um sampler assíncrono; por isso
+um gauge de lag não substitui a consulta SQL de drenagem. As novas medições identificam
+separadamente seus fontes e instrumentos.
+
+As rampas full oferecem, pela área dos estágios, aproximadamente 18.825 chegadas
+por workload em 120 s, média programada de 156,875/s, e a fase mista oferece o dobro.
+O alvo final de 500/s não é um patamar sustentado. Dividir eventos totais pelo tempo
+com seed e drenagens também não mede capacidade sustentada. Combinar um teto de VUs,
+uma taxa de pico e um percentil da fase não estima tempo de serviço ou espera de pool.
+
+### Oportunidades com benefício ainda não medido
+
+Atualizações de reserva/confirmação em lote são a primeira candidata, condicionada
+ao custo observado dos estágios. Aumentar publishers, pools ou recursos não foi aceito
+por inspeção: exige ganho consistente, custo explícito e efeito sobre HTTP sob a mesma
+taxa total. Patamares constantes de hot, distribuída e mista permitiriam separar esse
+efeito da diferença de carga das rampas. Nenhuma dessas possibilidades é apresentada
+como melhoria observada nas rodadas históricas.
 
 ## Limites da interpretação
 
