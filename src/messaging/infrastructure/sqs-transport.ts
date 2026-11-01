@@ -4,6 +4,7 @@ import {
   GetQueueUrlCommand,
   Message,
   ReceiveMessageCommand,
+  SendMessageBatchCommand,
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
@@ -11,6 +12,7 @@ import { Injectable } from "@nestjs/common";
 import { Configuration } from "../../config/config";
 import { QUEUES } from "../../observability/health/dependencies";
 import { canonicalHash } from "../../shared/application/canonical-json";
+import { OutboxMessage } from "../domain/outbox-message";
 
 export function deadLetterDeduplicationId(messageId: string, reason: string): string {
   const identity = `${messageId}:${reason}`;
@@ -55,7 +57,11 @@ export class SqsTransport {
         WaitTimeSeconds: waitSeconds,
         MaxNumberOfMessages: config.batchSize,
         VisibilityTimeout: config.visibilitySeconds,
-        MessageSystemAttributeNames: ["ApproximateReceiveCount", "MessageGroupId"],
+        MessageSystemAttributeNames: [
+          "ApproximateReceiveCount",
+          "MessageGroupId",
+          "MessageDeduplicationId",
+        ],
         MessageAttributeNames: ["All"],
       }),
       { abortSignal: AbortSignal.any([signal, AbortSignal.timeout((waitSeconds + 5) * 1000)]) },
@@ -111,6 +117,21 @@ export class SqsTransport {
       }),
       { abortSignal: AbortSignal.timeout(2000) },
     );
+  }
+  async publish(messages: OutboxMessage[]): Promise<Set<string>> {
+    const result = await this.client.send(
+      new SendMessageBatchCommand({
+        QueueUrl: await this.queue(QUEUES.events),
+        Entries: messages.map((message) => ({
+          Id: message.id,
+          MessageBody: JSON.stringify(message.payload),
+          MessageGroupId: message.aggregateId,
+          MessageDeduplicationId: message.id,
+        })),
+      }),
+      { abortSignal: AbortSignal.timeout(2000) },
+    );
+    return new Set(result.Successful?.flatMap((entry) => (entry.Id ? [entry.Id] : [])));
   }
   close(): void {
     this.client.destroy();

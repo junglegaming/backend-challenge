@@ -19,17 +19,27 @@ export class ResolvePendingTransaction {
     private readonly telemetry: WageringTelemetry,
   ) {}
 
-  async handle(transactionId: string) {
+  handle(transactionId: string) {
+    return this.run(transactionId);
+  }
+  handleNextDue() {
+    return this.run();
+  }
+
+  private async run(transactionId?: string) {
+    let selectedId = transactionId;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await this.resolve(transactionId, false);
+        return await this.resolve(selectedId, false, (id) => {
+          selectedId = id;
+        });
       } catch (error) {
         this.telemetry.databaseError(error);
         const classification = classifySqlError(error);
         if (classification === "known_unique_race" && attempt === 0) continue;
-        if (classification === "permanent") {
+        if (classification === "permanent" && selectedId) {
           try {
-            return await this.resolve(transactionId, true);
+            return await this.resolve(selectedId, true, () => {});
           } catch (failureError) {
             this.telemetry.databaseError(failureError);
           }
@@ -40,13 +50,25 @@ export class ResolvePendingTransaction {
     throw new TransientProcessingError();
   }
 
-  private async resolve(transactionId: string, failed: boolean) {
+  private async resolve(
+    transactionId: string | undefined,
+    failed: boolean,
+    selected: (id: string) => void,
+  ) {
     return this.uow.run(async (tx) => {
-      const initial = await this.transactions.find(tx, transactionId);
-      if (!initial || initial.status !== WagerTransactionStatus.PendingReference) return;
-      const wallet = await this.wallets.lock(tx, initial.walletId);
-      const transaction = await this.transactions.find(tx, transactionId);
+      const initial = transactionId ? await this.transactions.find(tx, transactionId) : null;
+      if (transactionId && (!initial || initial.status !== WagerTransactionStatus.PendingReference))
+        return;
+      const now = new Date();
+      const wallet = initial
+        ? await this.wallets.lock(tx, initial.walletId)
+        : await this.wallets.lockNextWithDueReference(tx, now);
+      if (!initial && !wallet) return;
+      const transaction = transactionId
+        ? await this.transactions.find(tx, transactionId)
+        : await this.transactions.findNextDueReference(tx, wallet?.id ?? "", now);
       if (!transaction || transaction.status !== WagerTransactionStatus.PendingReference) return;
+      selected(transaction.id);
       await this.settlement[failed ? "fail" : "apply"](
         tx,
         transaction,

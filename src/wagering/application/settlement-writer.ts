@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Injectable } from "@nestjs/common";
+import { Configuration } from "../../config/config";
 import { OutboxMessage } from "../../messaging/domain/outbox-message";
 import { TransactionContext } from "../../shared/application/unit-of-work";
 import { EventContext } from "../../shared/domain/integration-event";
@@ -14,6 +15,7 @@ import { FailureCode } from "../domain/failure-code";
 import { settle } from "../domain/settlement";
 import { WagerTransaction } from "../domain/wager-transaction";
 import { Wallet } from "../domain/wallet";
+import { TransientProcessingError } from "./errors";
 import { OutboxWriter } from "./ports/messaging";
 import {
   LedgerRepository,
@@ -28,6 +30,7 @@ export class SettlementWriter {
     private readonly transactions: WagerTransactionRepository,
     private readonly ledger: LedgerRepository,
     private readonly outbox: OutboxWriter,
+    private readonly configuration: Configuration,
   ) {}
 
   async fail(
@@ -61,17 +64,25 @@ export class SettlementWriter {
     existing = false,
   ): Promise<void> {
     const now = new Date();
-    const reference =
-      transaction.referenceExternalTransactionId === undefined
-        ? null
-        : await this.transactions.findByExternalId(
-            tx,
-            transaction.providerId,
-            transaction.referenceExternalTransactionId,
-          );
-    const referenceHasProcessedReversal = reference
-      ? await this.transactions.hasProcessedReversal(tx, reference.id)
-      : false;
+    let reference: WagerTransaction | null = null;
+    let referenceHasProcessedReversal = false;
+    try {
+      reference =
+        transaction.referenceExternalTransactionId === undefined
+          ? null
+          : await this.transactions.findByExternalId(
+              tx,
+              transaction.providerId,
+              transaction.referenceExternalTransactionId,
+            );
+      referenceHasProcessedReversal = reference
+        ? await this.transactions.hasProcessedReversal(tx, reference.id)
+        : false;
+    } catch (error) {
+      // A failed read establishes neither reference absence nor a permanent
+      // financial write failure. Keep the whole attempt retryable.
+      throw new TransientProcessingError(error);
+    }
     const outcome = settle({
       transaction,
       wallet,
@@ -81,6 +92,7 @@ export class SettlementWriter {
         transaction.referenceDeadlineAt !== undefined && now >= transaction.referenceDeadlineAt,
       now,
       referenceRetryJitter: existing ? Math.random() * 0.2 : 0,
+      referenceTtlMs: this.configuration.values.pending.ttlMs,
     });
     if (existing) await this.transactions.save(tx, transaction);
     else await this.transactions.insert(tx, transaction);

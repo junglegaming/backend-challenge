@@ -7,11 +7,17 @@ import { WalletLedgerEntry } from "../../domain/wallet-ledger-entry";
 export abstract class WalletRepository {
   abstract find(tx: TransactionContext, id: string): Promise<Wallet | null>;
   abstract lock(tx: TransactionContext, id: string): Promise<Wallet | null>;
+  abstract lockNextWithDueReference(tx: TransactionContext, now: Date): Promise<Wallet | null>;
   abstract insert(tx: TransactionContext, wallet: Wallet): Promise<void>;
   abstract save(tx: TransactionContext, wallet: Wallet): Promise<void>;
 }
 
 export abstract class WagerTransactionRepository {
+  abstract findNextDueReference(
+    tx: TransactionContext,
+    walletId: string,
+    now: Date,
+  ): Promise<WagerTransaction | null>;
   abstract find(tx: TransactionContext, id: string): Promise<WagerTransaction | null>;
   abstract findByKey(
     tx: TransactionContext,

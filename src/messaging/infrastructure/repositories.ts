@@ -74,4 +74,10 @@ export class SqlOutboxRepository extends OutboxWriter {
       },
     );
   }
+  async markPublished(tx: TransactionContext, id: string, at: Date): Promise<void> {
+    await managerFor(tx).execute(
+      "UPDATE outbox_messages SET published_at = ? WHERE id = ? AND published_at IS NULL",
+      [at, id],
+    );
+  }
 }

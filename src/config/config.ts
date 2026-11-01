@@ -36,6 +36,10 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
     }
     return value;
   }
+  const outboxLeaseMs = integer("OUTBOX_LEASE_MS", 15_000, 300_000);
+  const outboxRetryMaxMs = integer("OUTBOX_RETRY_MAX_MS", 300_000, 86_400_000);
+  if (outboxLeaseMs <= 2000 || outboxRetryMaxMs < outboxLeaseMs)
+    throw new Error("Invalid configuration: outbox lease must exceed SQS timeout");
   return Object.freeze({
     role: role as AppRole,
     port: port("PORT", "3000"),
@@ -55,6 +59,8 @@ export function parseConfiguration(env: Record<string, string | undefined>) {
       }),
     }),
     auth: Object.freeze({ issuer: url("AUTH_ISSUER"), jwksUrl: url("AUTH_JWKS_URL") }),
+    outbox: Object.freeze({ leaseMs: outboxLeaseMs, retryMaxMs: outboxRetryMaxMs }),
+    pending: Object.freeze({ ttlMs: integer("REFERENCE_TTL_MS", 86_400_000, 31_536_000_000) }),
     consumer: Object.freeze({
       concurrency: integer("CONSUMER_CONCURRENCY", 10, 100),
       batchSize: integer("SQS_BATCH_SIZE", 10, 10),

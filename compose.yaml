@@ -30,6 +30,9 @@ x-app: &app
     SHUTDOWN_DRAIN_MS: ${SHUTDOWN_DRAIN_MS:-25000}
     TEST_SYNC_POINTS: ${TEST_SYNC_POINTS:-}
     TEST_SYNC_MATCH: ${TEST_SYNC_MATCH:-}
+    OUTBOX_LEASE_MS: ${OUTBOX_LEASE_MS:-15000}
+    OUTBOX_RETRY_MAX_MS: ${OUTBOX_RETRY_MAX_MS:-300000}
+    REFERENCE_TTL_MS: ${REFERENCE_TTL_MS:-86400000}
   depends_on:
     bootstrap:
       condition: service_completed_successfully

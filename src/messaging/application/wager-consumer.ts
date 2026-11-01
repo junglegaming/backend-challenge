@@ -194,23 +194,14 @@ export class WagerConsumer implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
     this.syncPoint.shutdown();
-    const drained = this.loop.stop();
-    const timeout = new AbortController();
-    const result = await Promise.race([
-      drained.then(() => "drained"),
-      pause(this.configuration.values.consumer.shutdownDrainMs, timeout.signal).then(
-        () => "expired",
-      ),
-    ]);
-    timeout.abort();
-    if (result === "expired") {
+    const drained = await this.loop.stopWithin(this.configuration.values.consumer.shutdownDrainMs);
+    if (!drained) {
       this.drainExpired = true;
       await Promise.all([...this.outstanding].map((message) => this.release(message)));
     }
-    this.transport.close();
     this.logger.info({
       event: "consumer_stopped",
-      drained: result === "drained",
+      drained,
       instanceId: this.instanceId,
     });
   }

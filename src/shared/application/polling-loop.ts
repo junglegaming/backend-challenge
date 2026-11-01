@@ -33,4 +33,15 @@ export class PollingLoop {
     this.controller.abort();
     return this.work ?? Promise.resolve();
   }
+  async stopWithin(timeoutMs: number): Promise<boolean> {
+    const timeout = new AbortController();
+    try {
+      return await Promise.race([
+        this.stop().then(() => true),
+        pause(timeoutMs, timeout.signal).then(() => false),
+      ]);
+    } finally {
+      timeout.abort();
+    }
+  }
 }
