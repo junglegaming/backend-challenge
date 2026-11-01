@@ -268,6 +268,36 @@ describe("ordered settlement table", () => {
   });
 });
 
+test("equivalent UUID letter cases preserve the reference wallet scope", () => {
+  for (const uppercaseBet of [false, true]) {
+    const { wallet, entries } = open();
+    const bet = transaction({ walletId: uppercaseBet ? wallet.id.toUpperCase() : wallet.id });
+    const refund = transaction({
+      kind: Kind.Refund,
+      walletId: uppercaseBet ? wallet.id : wallet.id.toUpperCase(),
+      referenceExternalTransactionId: bet.externalTransactionId,
+    });
+    for (const [tx, ref] of [
+      [bet, null],
+      [refund, bet],
+    ] as const) {
+      const outcome = settle({
+        transaction: tx,
+        wallet,
+        reference: ref,
+        referenceHasProcessedReversal: false,
+        deadlineReached: false,
+        now,
+      });
+      expect(outcome.type).toBe("processed");
+      if (outcome.type === "processed" && outcome.ledgerEntry) entries.push(outcome.ledgerEntry);
+    }
+    expect(wallet.balance.toString()).toBe("100.00");
+    expect(entries).toHaveLength(3);
+    assertUnitLedgerInvariant(wallet, entries);
+  }
+});
+
 test("pending retries keep the first deadline and grow to the configured cap", () => {
   const { wallet, entries } = open();
   const tx = transaction({ kind: Kind.Refund, referenceExternalTransactionId: "missing" });
