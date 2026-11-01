@@ -119,6 +119,20 @@ arquivos de origem alterados e exige banco migrado novo/filas vazias. Não impri
 processo. `LOAD_PROFILE=quick|full` conserva os parâmetros existentes; `LOAD_SCENARIO=plateaus` é
 uma seleção separada e exige `full`.
 
+O bundle inclui exatamente o inventário versionado em `load/source-files.ts`: aplicação, migrations,
+scripts, observador, oráculos, suporte e arquivos de build/dependências. Gere os hashes desses arquivos
+com `git show HEAD:<caminho>` a partir do commit retido limpo e confira os bytes do checkout antes de
+empacotar. O manifesto JSON tem `{commit, files: {caminho: sha256}}`; entradas ausentes, adicionais ou
+alteradas são recusadas. Fixe também o SHA-256 dos bytes do próprio manifesto na evidência do operador
+e em `sourceManifestSha256` do manifesto do runner (`LOAD_SOURCE_MANIFEST_SHA256` no subprocesso).
+Esse digest fica igual entre unidades e é revalidado antes e depois da medição; não o regenere no runner.
+
+Cada unidade marcada como iniciada grava `execution.json` mesmo quando falha ao buscar secrets,
+autenticar Docker, baixar imagem ou iniciar Prometheus. Falha primária, cleanup e coleta têm campos
+separados. O runner tenta exportar esse registro mesmo sem runId; se o S3 falhar, o registro local
+permanece para coleta por SSM e a unidade termina com erro. Perda do host pode impedir a coleta e deve
+ser registrada como limitação, sem repetir a unidade para obter um resultado favorável.
+
 Os patamares são 180 s cada, em ordem hot50, distribuída50, mista25+25, mista50+50, distribuída100,
 hot100. Os primeiros 30 s são excluídos apenas das métricas `steady_*`, usando o início real do
 executor. Todas as identidades iniciadas permanecem na prova financeira. Há uma observação por

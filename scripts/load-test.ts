@@ -5,6 +5,7 @@ import { LoadEventObserver } from "../load/event-observer";
 import { completeEventCoverage, eventCoverage } from "../load/event-verification";
 import { LoadFixtures, loadCommand, parallelEach, Workload } from "../load/model";
 import { healthyScrapeTimestamps, instant, phaseMetrics } from "../load/prometheus";
+import { remoteK6 } from "../load/remote-k6";
 import { remoteSampler } from "../load/remote-sampler";
 import {
   assertResponseOutcome,
@@ -55,42 +56,6 @@ async function pollUntil<T>(
     timeoutMs,
     intervalMs,
   );
-}
-async function remoteK6(args: string[], env: NodeJS.ProcessEnv) {
-  checkCancellation();
-  const name = `wagering-load-k6-${runId}`;
-  const id = (await command(["docker", "create", "--name", name, ...args], env)).trim();
-  let stopping: Promise<unknown> | undefined;
-  const stop = () => {
-    stopping ??= command(["docker", "kill", "--signal", "SIGTERM", id], env).catch(() => undefined);
-  };
-  cancellation.signal.addEventListener("abort", stop, { once: true });
-  try {
-    checkCancellation();
-    const child = Bun.spawn(["docker", "start", "--attach", id], {
-      env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (cancellation.signal.aborted) stop();
-    const [output, , code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    checkCancellation();
-    const containerExit = Number(
-      (await command(["docker", "inspect", "--format", "{{.State.ExitCode}}", id], env)).trim(),
-    );
-    if (code !== 0 || containerExit !== 0)
-      throw new Error(`Remote k6 failed (${code}/${containerExit})`);
-    return output;
-  } finally {
-    cancellation.signal.removeEventListener("abort", stop);
-    await stopping;
-    // Removing a Docker client alone does not remove its container. This identity belongs only to this run.
-    await command(["docker", "rm", "-f", id], env);
-  }
 }
 const runDir = resolve("load/results", runId);
 await mkdir(runDir, { recursive: true });
@@ -239,7 +204,8 @@ async function verifyFinancialState(partial = false) {
 }
 
 try {
-  if (target.remote) await verifyLoadManifest(target.manifest, target.commit);
+  if (target.remote)
+    await verifyLoadManifest(target.manifest, target.commit, target.manifestSha256);
   if (!target.remote)
     await dc([
       "up",
@@ -425,6 +391,8 @@ try {
     "load/verification-query.ts",
     "load/k6/wagering.js",
     "load/target.ts",
+    "load/source-files.ts",
+    "load/remote-k6.ts",
     "load/event-observer.ts",
     "load/event-verification.ts",
     "load/remote-sampler.ts",
@@ -453,6 +421,7 @@ try {
           await command(["docker", "image", "inspect", "--format", "{{.Id}}", "wagering-app:load"])
         ).trim(),
     loadSourceSha256: source.digest("hex"),
+    sourceManifestSha256: target.remote ? target.manifestSha256 : null,
     bun: Bun.version,
     platform: process.platform,
     architecture: process.arch,
@@ -557,6 +526,8 @@ try {
             "/load/k6/wagering.js",
           ],
           phaseEnvironment,
+          cancellation.signal,
+          `wagering-load-k6-${runId}`,
         )
       : await dc(
           [
@@ -836,7 +807,8 @@ try {
     if (sampling.failed) throw new Error("Remote resource/backlog sampler failed");
   }
   await verifyFinancialState();
-  if (target.remote) await verifyLoadManifest(target.manifest, target.commit);
+  if (target.remote)
+    await verifyLoadManifest(target.manifest, target.commit, target.manifestSha256);
   checkCancellation();
   const proof = (await Bun.file(`${runDir}/verification.json`).json()) as {
     runId: string;

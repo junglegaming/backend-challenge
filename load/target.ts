@@ -1,6 +1,7 @@
 import { parseConfiguration } from "../src/config/config";
 import { Database } from "../src/shared/infrastructure/database";
 import { MikroOrmUnitOfWork } from "../src/shared/infrastructure/unit-of-work";
+import { loadSourceFiles } from "./source-files";
 
 export function loadTarget(env: NodeJS.ProcessEnv) {
   const target = env.LOAD_TARGET ?? "compose";
@@ -26,6 +27,8 @@ export function loadTarget(env: NodeJS.ProcessEnv) {
   const image = required("LOAD_K6_IMAGE");
   const appImage = required("LOAD_APP_IMAGE");
   const manifest = required("LOAD_SOURCE_MANIFEST");
+  const manifestSha256 = required("LOAD_SOURCE_MANIFEST_SHA256");
+  if (!/^[a-f0-9]{64}$/.test(manifestSha256)) throw new Error("Invalid manifest digest");
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Invalid LOAD_SOURCE_COMMIT");
   if (!/^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$/.test(image))
     throw new Error("Remote k6 image must be pinned by digest");
@@ -46,17 +49,27 @@ export function loadTarget(env: NodeJS.ProcessEnv) {
     commit,
     image,
     manifest,
+    manifestSha256,
     values,
   };
 }
 
-export async function verifyLoadManifest(path: string, commit: string) {
-  const manifest = (await Bun.file(path).json()) as {
+export async function verifyLoadManifest(path: string, commit: string, expectedSha256: string) {
+  const bytes = await Bun.file(path).arrayBuffer();
+  const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  if (sha256 !== expectedSha256) throw new Error("Load source manifest digest mismatch");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes)) as {
     commit: string;
     files: Record<string, string>;
   };
-  if (manifest.commit !== commit || !manifest.files || Object.keys(manifest.files).length === 0)
+  if (manifest.commit !== commit || !manifest.files)
     throw new Error("Load source manifest identity mismatch");
+  const files = Object.keys(manifest.files);
+  if (
+    files.length !== loadSourceFiles.length ||
+    loadSourceFiles.some((file) => !Object.hasOwn(manifest.files, file))
+  )
+    throw new Error("Incomplete load source manifest");
   for (const [file, hash] of Object.entries(manifest.files)) {
     if (
       file.startsWith("/") ||
@@ -71,7 +84,7 @@ export async function verifyLoadManifest(path: string, commit: string) {
       .digest("hex");
     if (actual !== hash) throw new Error(`Load source mismatch: ${file}`);
   }
-  return manifest;
+  return { ...manifest, sha256 };
 }
 
 export function remoteFixture(env: NodeJS.ProcessEnv) {

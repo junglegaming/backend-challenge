@@ -9,6 +9,7 @@ interface RunnerManifest {
   account: string;
   unit: "smoke" | "full-1" | "full-2" | "full-3" | "plateaus-1";
   sourceManifest: string;
+  sourceManifestSha256: string;
   deadline: string;
   apiUrl: string;
   issuer: string;
@@ -59,7 +60,7 @@ if (
   manifest.artifactsBucket !== `wagering-load-${manifest.session}-${manifest.account}-us-east-2`
 )
   throw new Error("Runner endpoints do not belong to the authorized session");
-await verifyLoadManifest(manifest.sourceManifest, manifest.commit);
+await verifyLoadManifest(manifest.sourceManifest, manifest.commit, manifest.sourceManifestSha256);
 
 const base = resolve("..");
 const lock = await open(`${base}/${manifest.unit}.started`, "wx", 0o600);
@@ -117,24 +118,64 @@ async function secret(arn: string) {
   if (typeof value.SecretString !== "string") throw new Error("Missing runner secret");
   return value.SecretString as string;
 }
-const databaseSecret = JSON.parse(await secret(manifest.databaseSecretArn)) as {
-  username?: string;
-  password?: string;
-};
-if (databaseSecret.username !== "wagering" || !databaseSecret.password)
-  throw new Error("Unexpected database identity");
-const provider = await secret(manifest.clientSecretArns.PROVIDER_A_SECRET);
-const operator = await secret(manifest.clientSecretArns.OPERATOR_SECRET);
 const dockerAuth = `${base}/docker-auth-${manifest.unit}`;
-await mkdir(dockerAuth, { mode: 0o700 });
-env.DOCKER_CONFIG = dockerAuth;
 const prometheusName = `wagering-load-prometheus-${manifest.session}-${manifest.unit}`;
-let prometheusStarted = false;
+let prometheusAttempted = false;
 let runId: string | undefined;
 const resultsPath = resolve("load/results");
-const previousResults = new Set(await readdir(resultsPath).catch(() => []));
 const executionPath = `${base}/${manifest.unit}-execution.json`;
+const execution = {
+  unit: manifest.unit,
+  commit: manifest.commit,
+  sourceManifestSha256: manifest.sourceManifestSha256,
+  startedAt: new Date().toISOString(),
+  completedAt: "",
+  stage: "secrets",
+  passed: false,
+  primaryFailure: null as null | { stage: string; code: string },
+  cleanupFailures: [] as { stage: string; code: string }[],
+  collectionFailures: [] as { stage: string; code: string }[],
+  load: null as null | {
+    exitCode: number;
+    runtimeGuardrailReached: boolean;
+    lines: string[];
+    failureLocations: string[];
+  },
+};
+const failureCode = (error: unknown) =>
+  error instanceof Error && /^[A-Za-z][A-Za-z0-9]*$/.test(error.name) ? error.name : "UnknownError";
+async function removeContainer(name: string) {
+  const ids = (await execute(["docker", "ps", "-aq", "--filter", `name=^/${name}$`])).trim();
+  if (ids) await execute(["docker", "rm", "-f", name]);
+}
+async function upload(path: string, key: string) {
+  await execute([
+    "aws",
+    "s3api",
+    "put-object",
+    "--region",
+    "us-east-2",
+    "--bucket",
+    manifest.artifactsBucket,
+    "--key",
+    `results/${manifest.unit}/${key}`,
+    "--body",
+    path,
+  ]);
+}
 try {
+  await Bun.write(executionPath, JSON.stringify(execution, null, 2));
+  const databaseSecret = JSON.parse(await secret(manifest.databaseSecretArn)) as {
+    username?: string;
+    password?: string;
+  };
+  if (databaseSecret.username !== "wagering" || !databaseSecret.password)
+    throw new Error("Unexpected database identity");
+  const provider = await secret(manifest.clientSecretArns.PROVIDER_A_SECRET);
+  const operator = await secret(manifest.clientSecretArns.OPERATOR_SECRET);
+  execution.stage = "docker-auth";
+  await mkdir(dockerAuth, { mode: 0o700 });
+  env.DOCKER_CONFIG = dockerAuth;
   const ecrToken = await execute(["aws", "ecr", "get-login-password", "--region", "us-east-2"]);
   await execute(
     [
@@ -147,13 +188,16 @@ try {
     ],
     ecrToken,
   );
+  execution.stage = "image-pull";
   for (const image of [manifest.images.k6, manifest.images.prometheus])
     await execute(["docker", "pull", image]);
+  execution.stage = "prometheus-start";
   const prometheusConfig = `${base}/prometheus-${manifest.unit}.yml`;
   await Bun.write(
     prometheusConfig,
     `global:\n  scrape_interval: 5s\n  scrape_timeout: 3s\nscrape_configs:\n  - job_name: wagering\n    dns_sd_configs:\n      - names: [api.${manifest.namespace}, consumer.${manifest.namespace}, worker.${manifest.namespace}]\n        type: A\n        port: 3000\n        refresh_interval: 5s\n    relabel_configs:\n      - source_labels: [__meta_dns_name]\n        regex: '(api|consumer|worker)\\..*'\n        replacement: '$1'\n        target_label: role\n`,
   );
+  prometheusAttempted = true;
   await execute([
     "docker",
     "run",
@@ -176,7 +220,6 @@ try {
     "--storage.tsdb.path=/prometheus",
     "--web.listen-address=127.0.0.1:9090",
   ]);
-  prometheusStarted = true;
   const loadEnv = {
     ...env,
     LOAD_TARGET: "remote",
@@ -184,6 +227,7 @@ try {
     LOAD_PROFILE: manifest.unit === "smoke" ? "quick" : "full",
     LOAD_SOURCE_COMMIT: manifest.commit,
     LOAD_SOURCE_MANIFEST: manifest.sourceManifest,
+    LOAD_SOURCE_MANIFEST_SHA256: manifest.sourceManifestSha256,
     LOAD_K6_IMAGE: manifest.images.k6,
     LOAD_APP_IMAGE: manifest.images.app,
     LOAD_PROMETHEUS_IMAGE: manifest.images.prometheus,
@@ -204,6 +248,7 @@ try {
     TEST_SYNC_POINTS: "",
     TEST_SYNC_MATCH: "",
   };
+  execution.stage = "load";
   if (Date.now() >= cutoff) throw new Error("Runtime allowance exhausted during runner setup");
   const child = Bun.spawn(["bun", "--no-env-file", "scripts/load-test.ts"], {
     env: loadEnv,
@@ -230,10 +275,7 @@ try {
   clearTimeout(forceTimer);
   runId = /^Load (?:quick|full): ([A-Za-z0-9-]+)$/m.exec(out)?.[1];
   // No raw subprocess output is retained; diagnostics are a closed technical projection.
-  const safe = {
-    unit: manifest.unit,
-    commit: manifest.commit,
-    completedAt: new Date().toISOString(),
+  execution.load = {
     exitCode: code,
     runtimeGuardrailReached: terminated,
     lines: (out + err)
@@ -248,18 +290,33 @@ try {
       .filter((line) => /^\s*at .*:\d+:\d+/.test(line))
       .slice(0, 20),
   };
-  await Bun.write(executionPath, JSON.stringify(safe, null, 2));
-  process.exitCode = terminated ? 1 : code;
+  if (terminated || code !== 0) {
+    execution.primaryFailure = {
+      stage: "load",
+      code: terminated ? "RuntimeGuardrail" : "LoadFailed",
+    };
+  }
+} catch (error) {
+  execution.primaryFailure = { stage: execution.stage, code: failureCode(error) };
 } finally {
-  try {
-    if (runId) {
-      // Safety net for a forced Bun exit; this name is emitted by this unit's child only.
-      await execute(["docker", "rm", "-f", `wagering-load-k6-${runId}`]).catch(() => {});
+  for (const name of [
+    ...(runId ? [`wagering-load-k6-${runId}`] : []),
+    ...(prometheusAttempted ? [prometheusName] : []),
+  ]) {
+    try {
+      await removeContainer(name);
+    } catch (error) {
+      execution.cleanupFailures.push({ stage: "container", code: failureCode(error) });
     }
-    if (prometheusStarted) await execute(["docker", "rm", "-f", prometheusName]);
+  }
+  try {
+    await rm(dockerAuth, { recursive: true, force: true });
+  } catch (error) {
+    execution.cleanupFailures.push({ stage: "docker-auth", code: failureCode(error) });
+  }
+  try {
     // Export only instrument output, never environment, Docker authentication or financial envelopes.
-    for (const directory of await readdir(resultsPath).catch(() => [])) {
-      if (previousResults.has(directory) || directory !== runId) continue;
+    for (const directory of runId ? [runId] : []) {
       for (const name of await readdir(`${resultsPath}/${directory}`)) {
         if (
           !/^(?:fixtures|expected|environment|verification|partial-verification|result|failure|participation|publication-latency|event-observer(?:-partial)?|resource-backlog-samples|(?:hot_wallet|distributed_wallets|replays|hot_plus_distributed|sqs_backlog|plateau_[a-z0-9_]+)(?:-counters|-prometheus(?:-through-drain)?|-responses)?)\.(?:json|jsonl|txt)$/.test(
@@ -267,36 +324,38 @@ try {
           )
         )
           continue;
-        await execute([
-          "aws",
-          "s3api",
-          "put-object",
-          "--region",
-          "us-east-2",
-          "--bucket",
-          manifest.artifactsBucket,
-          "--key",
-          `results/${manifest.unit}/${directory}/${name}`,
-          "--body",
-          `${resultsPath}/${directory}/${name}`,
-        ]);
+        try {
+          await upload(`${resultsPath}/${directory}/${name}`, `${directory}/${name}`);
+        } catch (error) {
+          execution.collectionFailures.push({ stage: "artifact-upload", code: failureCode(error) });
+        }
       }
     }
-    if (await Bun.file(executionPath).exists())
-      await execute([
-        "aws",
-        "s3api",
-        "put-object",
-        "--region",
-        "us-east-2",
-        "--bucket",
-        manifest.artifactsBucket,
-        "--key",
-        `results/${manifest.unit}/execution.json`,
-        "--body",
-        executionPath,
-      ]);
-  } finally {
-    await rm(dockerAuth, { recursive: true, force: true });
+  } catch (error) {
+    execution.collectionFailures.push({ stage: "artifact-discovery", code: failureCode(error) });
   }
+  execution.completedAt = new Date().toISOString();
+  execution.passed =
+    !execution.primaryFailure &&
+    execution.cleanupFailures.length === 0 &&
+    execution.collectionFailures.length === 0;
+  await Bun.write(executionPath, JSON.stringify(execution, null, 2));
+  try {
+    await upload(executionPath, "execution.json");
+  } catch (error) {
+    execution.collectionFailures.push({ stage: "execution-upload", code: failureCode(error) });
+    execution.passed = false;
+    await Bun.write(executionPath, JSON.stringify(execution, null, 2));
+  }
+  process.exitCode = execution.passed ? 0 : 1;
+  console.log(
+    JSON.stringify({
+      unit: execution.unit,
+      stage: execution.stage,
+      passed: execution.passed,
+      primaryFailure: execution.primaryFailure,
+      cleanupFailures: execution.cleanupFailures,
+      collectionFailures: execution.collectionFailures,
+    }),
+  );
 }
