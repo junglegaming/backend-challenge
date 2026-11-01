@@ -22,15 +22,15 @@ import {
 } from "../../src/wagering/infrastructure/repositories";
 import { testDatabase } from "./database";
 
-export function wageringHarness() {
-  const { database, uow, values } = testDatabase();
+export function wageringHarness(fixture = testDatabase()) {
+  const { database, uow, values } = fixture;
   const wallets = new SqlWalletRepository();
   const transactions = new SqlWagerTransactionRepository();
   const ledger = new SqlLedgerRepository();
   const outbox = new SqlOutboxRepository();
   const inbox = new SqlInboxStore();
   const telemetry = new WageringTelemetry();
-  const settlement = new SettlementWriter(wallets, transactions, ledger, outbox);
+  const settlement = new SettlementWriter(wallets, transactions, ledger, outbox, { values });
   return {
     database,
     values,

@@ -17,14 +17,14 @@ import {
   SqlWalletRepository,
 } from "../../src/wagering/infrastructure/repositories";
 
-export function testDatabase() {
+export function testDatabase(overrides: { dbName?: string; referenceTtlMs?: number } = {}) {
   if (process.env.WAGERING_STACK_MANAGED !== "1")
     throw new Error("Use the declared stack suite script");
   const values = parseConfiguration({
     ...process.env,
     DB_HOST: "127.0.0.1",
     DB_PORT: process.env.POSTGRES_HOST_PORT ?? "15432",
-    DB_NAME: "wagering",
+    DB_NAME: overrides.dbName ?? "wagering",
     DB_USER: "wagering",
     DB_PASSWORD: process.env.POSTGRES_PASSWORD ?? "local-wagering-only",
     SQS_ENDPOINT: "http://127.0.0.1:14566",
@@ -33,9 +33,38 @@ export function testDatabase() {
     AWS_SECRET_ACCESS_KEY: "local",
     AUTH_ISSUER: "http://keycloak:8080/realms/wagering",
     AUTH_JWKS_URL: "http://127.0.0.1:18080/realms/wagering/protocol/openid-connect/certs",
+    ...(overrides.referenceTtlMs === undefined
+      ? {}
+      : { REFERENCE_TTL_MS: String(overrides.referenceTtlMs) }),
   });
   const database = new Database({ values });
   return { database, uow: new MikroOrmUnitOfWork(database), values };
+}
+
+// Manual repository/use-case tests must not race the stack's active workers.
+// This uses the same real PostgreSQL server and versioned production migration.
+export async function scratchDatabase(options: { referenceTtlMs?: number } = {}) {
+  const admin = testDatabase();
+  const orm = await admin.database.orm;
+  const dbName = `fixture_${randomUUID().replaceAll("-", "")}`;
+  await orm.em.getConnection().execute(`CREATE DATABASE ${dbName}`);
+  const fixture = testDatabase({ dbName, ...options });
+  try {
+    await (await fixture.database.orm).migrator.up();
+  } catch (error) {
+    await fixture.database.onModuleDestroy();
+    await orm.em.getConnection().execute(`DROP DATABASE ${dbName}`);
+    await admin.database.onModuleDestroy();
+    throw error;
+  }
+  return {
+    ...fixture,
+    cleanup: async () => {
+      await fixture.database.onModuleDestroy();
+      await orm.em.getConnection().execute(`DROP DATABASE ${dbName}`);
+      await admin.database.onModuleDestroy();
+    },
+  };
 }
 
 export async function assertLedgerInvariant(database: Database, walletId?: string): Promise<void> {

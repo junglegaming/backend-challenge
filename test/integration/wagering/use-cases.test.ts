@@ -7,15 +7,16 @@ import {
 } from "../../../src/wagering/application/errors";
 import { SubmissionResult } from "../../../src/wagering/application/submit-wager-transaction";
 import { WagerTransactionKind as Kind } from "../../../src/wagering/domain/wager-transaction";
-import { assertLedgerInvariant } from "../../support/database";
+import { assertLedgerInvariant, scratchDatabase } from "../../support/database";
 import { wagerCommand, wageringHarness } from "../../support/wagering";
 
-const h = wageringHarness();
+const fixture = await scratchDatabase();
+const h = wageringHarness(fixture);
 afterEach(async () => {
   await assertLedgerInvariant(h.database);
 });
 afterAll(async () => {
-  await h.database.onModuleDestroy();
+  await fixture.cleanup();
 });
 const open = (amount = "100.00") =>
   h.open.handle({

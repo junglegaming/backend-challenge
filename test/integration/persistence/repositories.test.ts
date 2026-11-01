@@ -13,9 +13,10 @@ import {
   SqlWagerTransactionRepository,
   SqlWalletRepository,
 } from "../../../src/wagering/infrastructure/repositories";
-import { assertLedgerInvariant, seedOpening, testDatabase } from "../../support/database";
+import { assertLedgerInvariant, scratchDatabase, seedOpening } from "../../support/database";
 
-const { database, uow } = testDatabase();
+const fixture = await scratchDatabase();
+const { database, uow } = fixture;
 const wallets = new SqlWalletRepository();
 const transactions = new SqlWagerTransactionRepository();
 const ledger = new SqlLedgerRepository();
@@ -25,7 +26,7 @@ afterEach(async () => {
   await assertLedgerInvariant(database);
 });
 afterAll(async () => {
-  await database.onModuleDestroy();
+  await fixture.cleanup();
 });
 
 test("numeric(18,2) maximum is mapped to Money without numeric conversion", async () => {

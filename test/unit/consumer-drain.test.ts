@@ -87,6 +87,8 @@ test("drain expiry releases every received receipt before closing SQS, including
   try {
     await entered.promise;
     await consumer.onModuleDestroy();
+    // The runtime module closes the shared client after all runtime providers drain.
+    transport.close();
     expect(releasedAtClose.sort()).toEqual(["receipt-1", "receipt-2", "receipt-3"]);
     expect(acknowledgements).toBe(0);
   } finally {
