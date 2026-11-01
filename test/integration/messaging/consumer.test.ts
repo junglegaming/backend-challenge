@@ -55,11 +55,12 @@ async function transaction(externalId: string) {
 test("persistent inbox makes redelivery harmless and divergent reuse reaches the DLQ", async () => {
   const wallet = await openHttpWallet();
   const envelope = wagerMessage(wallet);
+  envelope.occurredAt = "2026-11-01T00:00:00Z";
   await sendWager(transport, envelope);
   await completedDelivery(envelope.messageId);
   expect((await transaction(envelope.data.externalTransactionId))?.status).toBe("PROCESSED");
-  await sendWager(transport, envelope);
-  await pollUntil("duplicate-message acknowledgement", async () => {
+  await sendWager(transport, { ...envelope, occurredAt: "2026-11-01T00:00:00.000Z" });
+  await pollUntil("duplicate-message acknowledgement despite timestamp formatting", async () => {
     const logs = await compose(["logs", "--no-log-prefix", "--no-color", "consumer"]);
     return logs.split("\n").some((line) => {
       try {
@@ -240,7 +241,7 @@ test("committed FAILED is recovered when redelivery precedes the DLQ handoff", a
       causationId: envelope.messageId,
     },
     {
-      inbox: { messageId: envelope.messageId, payloadHash: canonicalHash(envelope) },
+      inbox: { messageId: envelope.messageId, payloadHash: canonicalHash(envelope.data) },
     },
   );
   expect((await transaction(envelope.data.externalTransactionId))?.status).toBe("FAILED");
