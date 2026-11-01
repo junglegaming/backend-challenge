@@ -67,17 +67,38 @@ export async function scratchDatabase(options: { referenceTtlMs?: number } = {})
   };
 }
 
-export async function assertLedgerInvariant(database: Database, walletId?: string): Promise<void> {
+export async function assertLedgerInvariant(
+  database: Database,
+  requested?: string | string[],
+): Promise<void> {
   const orm = await database.orm;
-  const rows = await orm.em
-    .getConnection()
-    .execute<{ id: string; balance: string; rebuilt: string }[]>(
-      `SELECT w.id, w.balance::text, COALESCE(sum(CASE WHEN e.direction = 'CREDIT' THEN e.amount ELSE -e.amount END),0)::numeric(18,2)::text AS rebuilt
-     FROM wallets w LEFT JOIN wallet_ledger_entries e ON e.wallet_id = w.id
-     ${walletId ? "WHERE w.id = ?" : ""} GROUP BY w.id`,
-      walletId ? [walletId] : [],
-    );
-  for (const row of rows) expect(row.balance, `ledger invariant for ${row.id}`).toBe(row.rebuilt);
+  const walletIds = typeof requested === "string" ? [requested] : requested;
+  if (walletIds?.length === 0) return;
+  const rows = await orm.em.getConnection().execute<{ id: string; consistent: boolean }[]>(
+    `WITH ordered AS (
+        SELECT e.*, t.kind, row_number() OVER history AS position,
+          lag(e.balance_after) OVER history AS previous_balance,
+          lag(e.wallet_version) OVER history AS previous_version
+        FROM wallet_ledger_entries e JOIN wager_transactions t ON t.id = e.transaction_id
+        WINDOW history AS (PARTITION BY e.wallet_id ORDER BY e.wallet_version)
+      ), histories AS (
+        SELECT wallet_id, sum(CASE direction WHEN 'CREDIT' THEN amount ELSE -amount END) AS rebuilt,
+          max(wallet_version) AS last_version,
+          (array_agg(balance_after ORDER BY wallet_version DESC))[1] AS last_balance,
+          bool_and(CASE WHEN position = 1 THEN balance_before = 0 AND wallet_version = CASE WHEN kind = 'OPENING' THEN 1 ELSE 2 END
+            ELSE balance_before = previous_balance AND wallet_version = previous_version + 1 END) AS chain_valid
+        FROM ordered GROUP BY wallet_id
+      )
+      SELECT w.id, (w.balance = COALESCE(h.rebuilt, 0) AND
+        CASE WHEN h.wallet_id IS NULL THEN w.version = 1 AND w.balance = 0
+          ELSE h.chain_valid AND w.version = h.last_version AND w.balance = h.last_balance END) AS consistent
+      FROM wallets w LEFT JOIN histories h ON h.wallet_id = w.id
+      ${walletIds ? `WHERE w.id IN (${walletIds.map(() => "?").join(",")})` : ""}`,
+    walletIds ?? [],
+  );
+  if (walletIds) expect(new Set(rows.map((row) => row.id)).size).toBe(new Set(walletIds).size);
+  for (const row of rows)
+    expect(row.consistent, `ledger chain and balance invariant for ${row.id}`).toBe(true);
 }
 
 export async function insertRow(

@@ -65,7 +65,11 @@ export class EventConsumer {
     return received;
   }
 
-  async waitFor(eventIds: string[], minimumDeliveries = 1): Promise<ReceivedEvent[]> {
+  async waitFor(
+    eventIds: string[],
+    minimumDeliveries = 1,
+    timeoutMs = 40_000,
+  ): Promise<ReceivedEvent[]> {
     return pollUntil(
       "committed integration events",
       async () => {
@@ -79,7 +83,7 @@ export class EventConsumer {
           await this.consume(message);
         return undefined;
       },
-      40_000,
+      timeoutMs,
     );
   }
 

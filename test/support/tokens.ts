@@ -1,8 +1,9 @@
 export type LocalClient = "provider-a" | "provider-b" | "platform-operator";
-const tokens = new Map<LocalClient, Promise<string>>();
+const tokens = new Map<LocalClient, Promise<{ value: string; expiresAt: number }>>();
 
 export async function accessToken(client: LocalClient): Promise<string> {
   let token = tokens.get(client);
+  if (token && (await token).expiresAt <= Date.now()) token = undefined;
   if (!token) {
     token = (async () => {
       const secret =
@@ -23,11 +24,12 @@ export async function accessToken(client: LocalClient): Promise<string> {
         },
       );
       if (!response.ok) throw new Error(`Local identity provider returned ${response.status}`);
-      const body = (await response.json()) as { access_token?: string };
-      if (!body.access_token) throw new Error("Local identity provider returned no access token");
-      return body.access_token;
+      const body = (await response.json()) as { access_token?: string; expires_in?: number };
+      if (!body.access_token || !body.expires_in || body.expires_in <= 10)
+        throw new Error("Local identity provider returned no usable access token");
+      return { value: body.access_token, expiresAt: Date.now() + (body.expires_in - 10) * 1000 };
     })();
     tokens.set(client, token);
   }
-  return token;
+  return (await token).value;
 }

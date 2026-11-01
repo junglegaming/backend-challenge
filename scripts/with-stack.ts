@@ -28,11 +28,14 @@ if (action === "up") {
     throw new Error("wagering-test already exists; refusing to replace its services");
   try {
     await composeUp();
-    const child = Bun.spawn(["bun", "test", `test/${action}`, "--timeout", "60000"], {
-      env: { ...testEnvironment, WAGERING_STACK_MANAGED: "1" },
-      stdout: "inherit",
-      stderr: "inherit",
-    });
+    const child = Bun.spawn(
+      ["bun", "--no-env-file", "test", `test/${action}`, "--timeout", "60000"],
+      {
+        env: { ...testEnvironment, WAGERING_STACK_MANAGED: "1" },
+        stdout: "inherit",
+        stderr: "inherit",
+      },
+    );
     process.exitCode = await child.exited;
     if (process.exitCode !== 0) {
       console.error(await compose(["logs", "--no-log-prefix", "--no-color", "nginx"]));
@@ -53,7 +56,7 @@ if (action === "up") {
     }
     throw error;
   } finally {
-    await compose(["down", "--volumes", "--remove-orphans"]);
+    if (process.env.KEEP_STACK !== "1") await compose(["down", "--volumes", "--remove-orphans"]);
   }
 } else {
   throw new Error("Expected up, down, integration, concurrency or failure");

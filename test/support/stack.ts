@@ -2,6 +2,8 @@ export const testProject = "wagering-test";
 export const testEnvironment = {
   ...process.env,
   NODE_ENV: "test",
+  BUN_CONFIG_NO_ENV_FILE: "true",
+  BUN_CONFIG_NO_AUTO_INSTALL: "true",
   COMPOSE_PROFILES: "observability",
   SQS_WAIT_SECONDS: "1",
   SQS_VISIBILITY_SECONDS: "5",
@@ -63,12 +65,13 @@ export async function pollUntil<T>(
   description: string,
   probe: () => Promise<T | undefined | false>,
   timeoutMs = 30_000,
+  intervalMs = 100,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await probe();
     if (result !== undefined && result !== false) return result;
-    await Bun.sleep(100);
+    await Bun.sleep(intervalMs);
   }
   throw new Error(`Timed out waiting for ${description}`);
 }
