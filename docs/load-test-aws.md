@@ -5,7 +5,8 @@ experimento previa smoke de setup, três rodadas FULL e patamares constantes, co
 dados novos e parâmetros fixos. A primeira sessão falhou na implantação. A segunda
 produziu um QUICK diagnóstico aprovado e um FULL reprovado; o gate de predecessor
 aprovado impediu FULL2, FULL3 e todos os patamares. Falhas anteriores foram
-preservadas, sem terceira sessão ou repetição para selecionar um resultado favorável.
+preservadas. Uma terceira e última sessão foi autorizada após a correção local descrita
+abaixo; sua execução ainda não está comprovada nesta revisão.
 
 ## Ambiente, fonte e parâmetros
 
@@ -68,12 +69,16 @@ carga permanecem os mesmos.
 Essa correção trata uma falha alcançável do gerador, cuja implementação anterior
 encerrava no primeiro throttle. A operação terminal histórica continua desconhecida.
 Testes com falhas injetadas não comprovam recuperação de throttling AWS real.
-Uma nova medição exige autorização para outra sessão e orçamento: os resultados
-anteriores não foram reclassificados, e ainda não há FULL AWS aprovado nesta fonte.
+O usuário autorizou uma terceira e última sessão de até três horas incluindo limpeza,
+com teto acumulado de US$ 18. Os 60 minutos finais ficam reservados para coleta e
+limpeza. A sequência continua QUICK → FULL1 → FULL2 → FULL3 → patamares, exigindo
+aprovação integral de cada predecessor. Os resultados anteriores não foram
+reclassificados, e ainda não há FULL AWS aprovado nesta fonte.
 
 ## Custo e encerramento
 
-O limite autorizado foi US$ 10 e duas sessões. O custo final atribuível ao projeto
+As duas primeiras sessões tinham teto acumulado de US$ 10. A autorização posterior
+elevou o teto acumulado a US$ 18 e permitiu uma terceira e última sessão. O custo final atribuível ao projeto
 permanece **UNAVAILABLE**. Budgets reportou US$ 0,00 para a conta, sem filtro de
 projeto e sem informação de atualização; isso não demonstra custo zero, execução
 gratuita ou saldo disponível. Os modelos usados na admissão não são faturamento.

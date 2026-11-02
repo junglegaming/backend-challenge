@@ -297,7 +297,7 @@ if (
   !Number.isFinite(Date.parse(manifest.deadline))
 )
   throw new Error("Invalid runner manifest identity");
-const cutoff = Date.parse(manifest.deadline) - 40 * 60_000;
+const cutoff = Date.parse(manifest.deadline) - 60 * 60_000;
 if (Date.now() >= cutoff) throw new Error("No runtime allowance left for a new load unit");
 for (const image of Object.values(manifest.images))
   if (

@@ -87,11 +87,13 @@ acesso a GitHub, Docker Hub ou Quay para instalar ferramentas durante o boot.
 
 ## Ordem de operação e orçamento
 
-O limite explicitamente estendido é **350 minutos cumulativos**, contando provisioning, falhas e cleanup, em **até duas
-sessões**. O alerta AWS Budgets de US$ 10 não interrompe gastos e deve existir antes de aplicar.
-Mantenha o ledger externo desde antes do primeiro apply até a remoção verificada, sem reiniciar
-o saldo em reapplies. `session_started_at`, `previous_runtime_seconds` e `stop_at` são fixos na
-sessão. O prazo não pode superar `session_started_at + 350min - runtime anterior`.
+A autorização atual permite uma **terceira e última sessão de até três horas**, incluindo
+provisionamento, medições, coleta e limpeza, com **teto acumulado de US$ 18**. O alerta
+AWS Budgets existente de US$ 10 não interrompe gastos nem comprova saldo em tempo real.
+Mantenha o ledger externo desde antes do primeiro apply até a remoção verificada, preservando
+o histórico das duas sessões anteriores. `session_started_at`, `previous_runtime_seconds` e
+`stop_at` são fixos na sessão. O prazo não pode superar `session_started_at + 3h`; reapplies
+não reiniciam esse relógio. A autorização não inclui quarta sessão.
 
 1. Depois da revisão focada, confirme identidade com `aws sts get-caller-identity --profile
    wagering-load --region us-east-2`, validade das credenciais, quotas e alerta de orçamento. Uma
@@ -114,7 +116,7 @@ sessão. O prazo não pode superar `session_started_at + 350min - runtime anteri
    database nova, nesta ordem fixa. Pare os serviços antes de trocar `run_database_name`, migre e
    confirme filas vazias antes de reiniciar. Não altere `db_name` do recurso RDS entre rodadas.
    Preserve cada rodada, inclusive falhas. Não repita para escolher uma rodada favorável.
-7. Reserve operacionalmente 20 minutos do saldo para parar admissão, coletar e destruir. Não inicie uma etapa que não
+7. Reserve operacionalmente os 60 minutos finais da sessão para parar admissão, coletar e destruir. Não inicie uma etapa que não
    caiba. Credenciais inválidas com stack ativa exigem aviso imediato; não troque identidade.
 
 Os schedules têm precisão de um minuto, e a parada do RDS é assíncrona. Eles são a proteção de
@@ -176,6 +178,6 @@ roles compartilhadas/preexistentes precisam ser inventariadas antes do apply; a 
 permite apagar indiscriminadamente recursos de outra finalidade.
 
 Feche o ledger somente após destroy e verificação remota. Com três full reconciliados, publique
-resultados complementares; com falta de acesso, prazo ou setup sem sucesso em duas sessões,
+resultados complementares; com falta de acesso, prazo ou setup sem sucesso nas três sessões autorizadas,
 documente a limitação e siga com a entrega principal. Nenhum número AWS representa produção,
 Multi-AZ, latência do Brasil ou uma comparação isolada entre SQS e MiniStack.

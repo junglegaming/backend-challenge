@@ -22,7 +22,7 @@ variables {
   database_version   = "17.11"
   source_commit      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   session_started_at = "2026-11-01T00:00:00Z"
-  stop_at            = "2026-11-01T05:50:00Z"
+  stop_at            = "2026-11-01T03:00:00Z"
   client_secrets     = { PROVIDER_A_SECRET = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PROVIDER_B_SECRET = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", OPERATOR_SECRET = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
 }
 
@@ -37,7 +37,7 @@ run "private_and_stopped_until_verified" {
     error_message = "Sizes must stay within D26."
   }
   assert {
-    condition     = length(aws_vpc_endpoint.interface) == 8 && length(aws_scheduler_schedule.stop) == 6 && alltrue([for schedule in aws_scheduler_schedule.stop : schedule.schedule_expression == "at(2026-11-01T05:50:00)" && schedule.state == "ENABLED"])
+    condition     = length(aws_vpc_endpoint.interface) == 8 && length(aws_scheduler_schedule.stop) == 6 && alltrue([for schedule in aws_scheduler_schedule.stop : schedule.schedule_expression == "at(2026-11-01T03:00:00)" && schedule.state == "ENABLED"])
     error_message = "Eight private endpoints and all six fixed-deadline stops are mandatory."
   }
   assert {
@@ -72,27 +72,27 @@ run "refuse_unverified_start" {
   expect_failures = [var.start_services]
 }
 
-run "refuse_extended_cumulative_deadline" {
+run "refuse_negative_previous_runtime" {
   command = plan
-  variables { previous_runtime_seconds = 60 }
-  expect_failures = [var.stop_at]
+  variables { previous_runtime_seconds = -1 }
+  expect_failures = [var.previous_runtime_seconds]
 }
 
-run "accept_cumulative_350_minute_boundary" {
+run "accept_three_hour_session_with_complete_history" {
   command = plan
   variables {
-    session_started_at       = "2026-11-02T02:30:11Z"
-    previous_runtime_seconds = 5227
-    stop_at                  = "2026-11-02T06:53:04Z"
+    session_started_at       = "2026-11-02T09:00:00Z"
+    previous_runtime_seconds = 23356
+    stop_at                  = "2026-11-02T12:00:00Z"
   }
 }
 
-run "refuse_cumulative_350_minute_boundary_plus_one_second" {
+run "refuse_three_hour_session_plus_one_second" {
   command = plan
   variables {
-    session_started_at       = "2026-11-02T02:30:11Z"
-    previous_runtime_seconds = 5227
-    stop_at                  = "2026-11-02T06:53:05Z"
+    session_started_at       = "2026-11-02T09:00:00Z"
+    previous_runtime_seconds = 23356
+    stop_at                  = "2026-11-02T12:00:01Z"
   }
   expect_failures = [var.stop_at]
 }

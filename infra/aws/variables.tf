@@ -75,8 +75,8 @@ variable "previous_runtime_seconds" {
   type    = number
   default = 0
   validation {
-    condition     = var.previous_runtime_seconds >= 0 && var.previous_runtime_seconds < 15000 && floor(var.previous_runtime_seconds) == var.previous_runtime_seconds
-    error_message = "Carry previous runtime forward; preserve cleanup allowance."
+    condition     = var.previous_runtime_seconds >= 0 && floor(var.previous_runtime_seconds) == var.previous_runtime_seconds
+    error_message = "Carry the complete previous runtime forward as nonnegative whole seconds."
   }
 
 }
@@ -85,8 +85,8 @@ variable "stop_at" {
   type = string
   validation {
 
-    condition     = try(timecmp(var.stop_at, timeadd(var.session_started_at, "${21000 - var.previous_runtime_seconds}s")) <= 0 && timecmp(var.stop_at, timeadd(var.session_started_at, "1200s")) > 0 && can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", var.stop_at)), false)
-    error_message = "The fixed stop deadline must respect the explicitly extended cumulative 350-minute budget. Never reset it on reapply."
+    condition     = try(timecmp(var.stop_at, timeadd(var.session_started_at, "10800s")) <= 0 && timecmp(var.stop_at, timeadd(var.session_started_at, "1200s")) > 0 && can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", var.stop_at)), false)
+    error_message = "The fixed stop deadline must respect the authorized three-hour session, including cleanup. Never reset it on reapply."
 
   }
 
