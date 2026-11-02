@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { docsThemeCsp, docsThemeScript, renderDocsTopbar } from "../../scripts/docs-theme";
 import {
   buildCampaign,
   campaignData,
@@ -39,6 +40,29 @@ import {
 } from "../../scripts/render-load-report";
 
 const identity = { sourceCommit: "a".repeat(40), loadSourceSha256: "b".repeat(64) };
+
+function expectTrustedTheme(html: string) {
+  const topbar = renderDocsTopbar("../../../");
+  expect(html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi)).toEqual([docsThemeScript]);
+  expect(html).toContain(docsThemeCsp);
+  expect(html).not.toMatch(/script-src[^;"]*'unsafe-inline'/i);
+  expect(html).toContain(topbar);
+  for (const path of [
+    "docs/load-report/index.html",
+    "README.md",
+    "docs/architecture.html",
+    "docs/verification.md",
+  ])
+    expect(html).toContain(`href="../../../${path}"`);
+  expect(html.match(/<style data-docs-dark\b/g)).toHaveLength(1);
+  expect(html).toContain('data-docs-dark media="screen and (prefers-color-scheme: dark)"');
+  expect(html.indexOf(docsThemeScript)).toBeLessThan(html.indexOf("</head>"));
+  expect(html.indexOf(topbar)).toBeGreaterThan(html.indexOf("<main>"));
+  expect(html.replace(docsThemeScript, "")).not.toMatch(
+    /<script|<iframe|\son\w+\s*=|(?:src|href)\s*=\s*["'](?:https?:|javascript:)/i,
+  );
+}
+
 function fixture(): AggregateInput[] {
   const verification = {
     runId: "synthetic-quick",
@@ -477,7 +501,9 @@ describe("separate FULL campaign reports", () => {
       serialized.runs[0].environment.opaqueEndpoint = "DO_NOT_COPY";
       const projected = campaignData(serialized);
       expect(JSON.stringify(projected)).not.toContain("DO_NOT_COPY");
-      expect(campaignHtml(projected)).toBe(readFileSync(join(output, "index.html"), "utf8"));
+      const html = campaignHtml(projected);
+      expect(html).toBe(readFileSync(join(output, "index.html"), "utf8"));
+      expectTrustedTheme(html);
       expect(() => writeCampaign(campaign, output)).toThrow("OUTPUT_EXISTS");
       projected.runs[0]!.financial.duplicate_effects = 1;
       expect(() => writeCampaign(projected, join(root, "failed-output"))).toThrow(
@@ -546,7 +572,7 @@ describe("allowlisted file loading and standalone output", () => {
       expect(html).not.toContain(root);
       expect(html).not.toContain("synthetic-replica");
       expect(html).not.toContain("synthetic-events.fifo");
-      expect(html).not.toMatch(/<script|<iframe|(?:src|href)=["']https?:/i);
+      expectTrustedTheme(html);
       expect(svg).toContain('xmlns="http://www.w3.org/2000/svg"');
       expect(svg).not.toContain("FORBIDDEN_SYNTHETIC_MARKER");
       for (const phase of PHASES.slice(0, 4)) {
