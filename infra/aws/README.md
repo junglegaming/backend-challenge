@@ -20,6 +20,11 @@ atendem às exigências do ALB e do subnet group do RDS; tasks, runner, RDS e oi
 ficam na AZ primária. O gateway S3 permite o bucket de artefatos e as camadas regionais do ECR.
 Security groups autorizam somente os caminhos entre serviços; `/metrics` não tem rota no ALB.
 
+O target group verifica `/health/live` diretamente nas APIs para que uma falha temporária de
+PostgreSQL ou SQS não provoque substituição de processos vivos pelo ECS. A admissão da carga
+continua exigindo `/health/ready`, que verifica essas dependências. Durante uma indisponibilidade,
+o ALB pode encaminhar requisições a uma API viva que responde 503 até a recuperação.
+
 São três APIs, três consumers, dois workers e um Keycloak, cada task com 1 vCPU e 2 GiB. O banco é
 PostgreSQL 17, `db.m7g.2xlarge`, Single-AZ, gp3 100 GiB criptografado, com TLS obrigatório, 200 conexões
 e timeout de transação ociosa de 10 s. O runner privado `c7i.2xlarge` é acessível por SSM. Não há

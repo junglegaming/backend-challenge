@@ -19,6 +19,9 @@ resource "aws_service_discovery_service" "load" {
     routing_policy = "MULTIVALUE"
 
   }
+  # Private ECS discovery needs custom health checks. Provider 6.71.0 can omit
+  # an empty block; keep the explicit value despite its deprecation warning.
+  # https://github.com/hashicorp/terraform-provider-aws/issues/44285
   health_check_custom_config {
     failure_threshold = 1
   }

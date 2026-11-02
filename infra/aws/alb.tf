@@ -17,7 +17,7 @@ resource "aws_lb_target_group" "api" {
   protocol             = "HTTP"
   deregistration_delay = 30
   health_check {
-    path                = "/health/ready"
+    path                = "/health/live"
     matcher             = "200"
     interval            = 15
     timeout             = 5
