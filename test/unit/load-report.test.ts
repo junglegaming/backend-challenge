@@ -12,6 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildCampaign,
+  campaignData,
+  campaignHtml,
+  writeCampaign,
+} from "../../scripts/render-load-campaign";
+import {
   type AggregateInput,
   ALLOWED_FILES,
   afterWarmup,
@@ -324,6 +330,163 @@ function onDisk<T>(run: (paths: Record<InputKey, string>, root: string) => T): T
   }
 }
 
+function fullFixture(root: string, remote = false): void {
+  const read = (name: string) => JSON.parse(readFileSync(join(root, name), "utf8"));
+  const save = (name: string, value: unknown) =>
+    writeFileSync(join(root, name), JSON.stringify(value));
+  const environment = read("environment.json"),
+    result = read("result.json"),
+    proof = read("verification.json");
+  const runId = "2026-11-02T16-38-47-783Z-354c2da7";
+  Object.assign(environment, {
+    runId,
+    profile: "full",
+    ...(remote ? { target: "remote", scenario: "standard" } : {}),
+    topology: { api: 3, consumer: 3, worker: 2 },
+    docker: { cpus: 8, memoryBytes: 16000000000 },
+    operational: {
+      consumerConcurrency: 10,
+      poolMaxPerProcess: 10,
+      postgresMaxConnections: 200,
+      lockTimeoutMs: 2000,
+      visibilitySeconds: 30,
+      waitSeconds: 20,
+      maxReceives: 5,
+      outboxLeaseMs: 15000,
+    },
+    generator: { stages: [25, 100, 250, 500], stageSeconds: 30, maxVUsPerWorkload: 300 },
+  });
+  if (!remote) {
+    delete environment.target;
+    delete environment.scenario;
+  }
+  proof.runId = runId;
+  Object.assign(result, {
+    runId,
+    profile: "full",
+    verification: proof,
+    events: result.phases[0].events,
+  });
+  if (!remote) {
+    for (const phase of result.phases) delete phase.events;
+    delete result.sqs.events;
+    delete result.events;
+  }
+  for (const phase of PHASES.slice(0, 4)) {
+    const summary = read(`${phase}.json`);
+    summary.metrics.iterations.values.rate = summary.metrics.iterations.values.count / 24;
+    save(`${phase}.json`, summary);
+  }
+  save("environment.json", environment);
+  save("result.json", result);
+  save("verification.json", proof);
+  save("sqs_backlog.json", result.sqs);
+}
+
+describe("separate FULL campaign reports", () => {
+  test("one or three runs from another source keep their own identity and measured environment", () =>
+    onDisk((paths) => {
+      fullFixture(paths["aws-quick"], true);
+      const campaign = buildCampaign("aws", [paths["aws-quick"]]);
+      campaign.sourceCommit = "c".repeat(40);
+      campaign.loadSourceSha256 = "d".repeat(64);
+      const first = campaign.runs[0]!;
+      first.environment.apiReplicas = 5;
+      first.environment.runnerCpus = 7;
+      first.environment.consumerConcurrency = 4;
+      const single = campaignHtml(campaignData(campaign));
+      expect(single).toContain("<h1>AWS · FULL aprovado</h1>");
+      expect(single).toContain("ccccccc/dddddddd");
+      expect(single).toContain("5 API · 3 consumers · 2 workers");
+      expect(single).toContain("7 CPUs");
+      expect(single).toContain("4 concorrentes / 10 conexões");
+      expect(single).toContain(new Date(first.startedAt).toISOString());
+      expect(single).not.toContain("FULL3");
+      expect(single).not.toContain("db.m7g.2xlarge");
+      expect(single).not.toContain("/health/live");
+      for (const suffix of ["00000001", "00000002"]) {
+        const copy = structuredClone(first);
+        copy.id = copy.id.replace(/[a-f0-9]{8}$/, suffix);
+        campaign.runs.push(copy);
+      }
+      const triple = campaignHtml(campaignData(campaign));
+      expect(triple).toContain("<h1>AWS · 3 FULL aprovados</h1>");
+      expect(triple).toContain("3 execuções completas aprovadas na coorte ccccccc/dddddddd");
+      expect(triple).not.toContain("uma única amostra AWS");
+      expect(triple).not.toContain("FULL3");
+    }));
+  test("historical local instrumentation stays unknown and missing drop metrics never become zero", () =>
+    onDisk((paths) => {
+      fullFixture(paths["aws-quick"]);
+      const campaign = buildCampaign("local", [paths["aws-quick"]]);
+      expect(
+        campaign.runs[0]!.phases.every(
+          (phase) => phase.dropped === null && phase.eventDrainMs === null,
+        ),
+      ).toBe(true);
+      const html = campaignHtml(campaign);
+      expect(html).toContain("UNKNOWN");
+      expect(html).toContain("não demonstra sustentar 500 req/s");
+      expect(html).not.toContain("FORBIDDEN_SYNTHETIC_MARKER");
+      expect(JSON.stringify(campaign)).not.toContain("synthetic-replica");
+    }));
+  test("a remote FULL without persisted event coverage is rejected", () =>
+    onDisk((paths) => {
+      fullFixture(paths["aws-quick"], true);
+      const campaign = buildCampaign("aws", [paths["aws-quick"]]);
+      expect(campaign.runs[0]!.remoteInboxes?.events).toBe(4052);
+      const path = join(paths["aws-quick"], "result.json");
+      const result = JSON.parse(readFileSync(path, "utf8"));
+      delete result.phases[0].events;
+      writeFileSync(path, JSON.stringify(result));
+      expect(() => buildCampaign("aws", [paths["aws-quick"]])).toThrow(
+        "MISSING_REMOTE_EVENT_PROOF",
+      );
+    }));
+  test("mixed identity and partial proof cannot be admitted into a campaign", () =>
+    onDisk((paths, root) => {
+      fullFixture(paths["aws-quick"]);
+      const second = join(root, "second");
+      mkdirSync(second);
+      for (const name of ALLOWED_FILES)
+        if (existsSync(join(paths["aws-quick"], name)))
+          writeFileSync(join(second, name), readFileSync(join(paths["aws-quick"], name)));
+      const envPath = join(second, "environment.json"),
+        env = JSON.parse(readFileSync(envPath, "utf8"));
+      env.gitHead = "b".repeat(40);
+      writeFileSync(envPath, JSON.stringify(env));
+      expect(() => buildCampaign("local", [paths["aws-quick"], second])).toThrow(
+        "MIXED_SOURCE_COMMIT",
+      );
+      const proofPath = join(paths["aws-quick"], "verification.json"),
+        proof = JSON.parse(readFileSync(proofPath, "utf8"));
+      proof.partial = true;
+      writeFileSync(proofPath, JSON.stringify(proof));
+      expect(() => buildCampaign("local", [paths["aws-quick"]])).toThrow(
+        "PARTIAL_CAMPAIGN_VERIFICATION",
+      );
+    }));
+  test("closed projection regenerates byte-identical HTML without original aggregates", () =>
+    onDisk((paths, root) => {
+      fullFixture(paths["aws-quick"]);
+      const campaign = buildCampaign("local", [paths["aws-quick"]]);
+      const output = join(root, "rendered");
+      writeCampaign(campaign, output);
+      const serialized = JSON.parse(readFileSync(join(output, "campaign.json"), "utf8"));
+      serialized.unrelatedSecret = "DO_NOT_COPY";
+      serialized.runs[0].environment.opaqueEndpoint = "DO_NOT_COPY";
+      const projected = campaignData(serialized);
+      expect(JSON.stringify(projected)).not.toContain("DO_NOT_COPY");
+      expect(campaignHtml(projected)).toBe(readFileSync(join(output, "index.html"), "utf8"));
+      expect(() => writeCampaign(campaign, output)).toThrow("OUTPUT_EXISTS");
+      projected.runs[0]!.financial.duplicate_effects = 1;
+      expect(() => writeCampaign(projected, join(root, "failed-output"))).toThrow(
+        "FAILED_FINANCIAL_GATE",
+      );
+      expect(existsSync(join(root, "failed-output"))).toBe(false);
+    }));
+});
+
 describe("allowlisted file loading and standalone output", () => {
   test("eighteen accepted aggregates plus two excluded environments, without prohibited reads", () =>
     onDisk((paths) => {
@@ -379,7 +542,7 @@ describe("allowlisted file loading and standalone output", () => {
       expect(html).toContain("wallet.balance == saldo reconstruído do ledger");
       expect(html).toContain("Contagem não exportada");
       expect(html).toContain("Reconciliação final dos eventos");
-      expect(html).toContain("../verification.md#manual-entregue-oito-seletores-pass");
+      expect(html).toContain("../verification.md");
       expect(html).not.toContain(root);
       expect(html).not.toContain("synthetic-replica");
       expect(html).not.toContain("synthetic-events.fifo");
