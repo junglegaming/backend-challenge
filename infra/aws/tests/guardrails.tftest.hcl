@@ -49,6 +49,10 @@ run "private_and_stopped_until_verified" {
     error_message = "The events FIFO queue must retain the observed high-throughput configuration."
   }
   assert {
+    condition     = aws_sqs_queue.requests.deduplication_scope == "messageGroup" && aws_sqs_queue.requests.fifo_throughput_limit == "perMessageGroupId"
+    error_message = "The requests FIFO queue must explicitly support the remote backlog workload."
+  }
+  assert {
     condition     = toset(jsondecode(aws_iam_role_policy.task["api"].policy).Statement[0].Action) == toset(["sqs:GetQueueUrl", "sqs:GetQueueAttributes"]) && length(jsondecode(aws_iam_role_policy.task["api"].policy).Statement) == 1 && toset(jsondecode(aws_iam_role_policy.task["api"].policy).Statement[0].Resource) == toset(local.queue_arns)
     error_message = "API permissions must remain metadata-only."
   }
