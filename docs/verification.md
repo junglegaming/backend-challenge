@@ -10,6 +10,25 @@ usaram ferramentas do host. A reprodução opcional `bun run verify:manual` usa 
 containers, fora de `bun run test` e da CI. As ferramentas do host não se tornam pré-requisitos.
 Os resultados de carga e suas condições estão em [load-test.md](load-test.md).
 
+Os cinco gates locais de entrega passaram no clone limpo da fonte `d52abed`, em 02/11/2026.
+As contagens e os recibos estão em [Gates locais em d52abed](#gates-locais-em-d52abed).
+A revisão documental posterior está em trabalho: esses recibos comprovam a fonte identificada,
+sem declarar um novo commit validado ou uma execução remota de GitHub Actions.
+
+| Visualização offline | Evidência e limite |
+| --- | --- |
+| [Índice dos resultados de carga](load-report/index.html) | Acesso às campanhas, com fontes e ambientes separados. |
+| [FULL local: rodadas A/B/C](load-report/local/index.html) | Três rodadas históricas da fonte `06e6165`, hash de carga `c99c4ac6…`; condições em [load-test.md](load-test.md). |
+| [AWS: FULL3 aprovado](load-report/aws/index.html) | Uma rodada da quarta sessão, aplicação `d52abed` e hash de carga `0d029aec…`, com a correção de infraestrutura descrita em [load-test-aws.md](load-test-aws.md). |
+| [QUICK histórico a98](load-report/historical/index.html) | Diagnóstico da coorte `a98d1e6`/`36b77c…`; seus dois FULL nominados permanecem reprovados/excluídos. |
+| [Arquitetura](architecture.html) | Fluxo HTTP/SQS, transação SQL e recuperação, complementando [ARCHITECTURE.md](../ARCHITECTURE.md). |
+
+Os FULL locais e o FULL AWS usam fontes e instrumentos distintos. As visualizações preservam essa
+fronteira: não demonstram comparação de desempenho sob a mesma campanha nem três rodadas AWS.
+
+<details>
+<summary>Histórico das campanhas retidas, restauração da outbox e fronteiras da evidência</summary>
+
 ## Estado da versão retida e fronteira da evidência
 
 A candidata de persistência em lote da outbox não foi retida. Os seis braços da comparação passaram
@@ -186,6 +205,8 @@ mutantes nem um manifesto global de fontes iguais. Mudanças adicionais de runti
 Compose, assertions ou entrypoints exigem nova conferência de dependências; a
 waiver dispensa somente uma nova GNU20.
 
+</details>
+
 ## Reprodução manual em containers
 
 Os comandos abaixo exigem Bun 1.4.3 e Docker com Compose. As ferramentas manuais rodam nas
@@ -253,6 +274,9 @@ O runner registra os IDs efetivos das imagens dos serviços, verifica os instrum
 quando parte de árvore limpa, exige que ela permaneça no mesmo commit. Outros sistemas e
 daemons remotos não foram testados.
 
+<details>
+<summary>Método histórico e prova de detecção: 15 mutantes, 16 falhas esperadas</summary>
+
 ## Método e alcance
 
 Cada suíte com containers cria o projeto isolado `wagering-test` e, por padrão, remove seus containers
@@ -312,10 +336,13 @@ seus `xmin`, com workers parados; após redelivery, os IDs já comprometidos dev
 Essa alteração atingiu somente os testes. Seu baseline completo terminou com 13 testes aprovados,
 zero falhas e 1.500 asserções em 427,04 s; lint, tipos e 116 testes unitários também passaram.
 
+</details>
+
 ## Rastreabilidade de ASSESMENT.md §13
 
-A tabela abaixo reúne os testes entregues e suas aprovações históricas nas respectivas suítes reais;
-não declara uma nova execução da versão retida. Unidade exercita o domínio sem containers; integração,
+A tabela abaixo reúne os testes entregues, cobertos pelos [gates da fonte d52abed](#gates-locais-em-d52abed),
+e identifica os cenários também presentes nas campanhas históricas. Não declara nova execução do WIP
+documental. Unidade exercita o domínio sem containers; integração,
 concorrência e falhas usam PostgreSQL e MiniStack reais. Os nomes dos oito cenários representam treze
 instâncias de teste, pois há variantes HTTP/SQS/mista e casos extras.
 
@@ -367,6 +394,9 @@ não substituem as variantes da suíte de concorrência.
 | Publisher encerrado após claim | `publisher killed after claim leaves a persisted lease that another worker recovers without losing its event` |
 | Keycloak pausado e cache de chaves | `paused Keycloak serves cached keys on all APIs, unknown-key refresh returns503 and recovers after resume` |
 | Restart do PostgreSQL durante tráfego | `PostgreSQL restart during mixed traffic recovers existing processes and preserves every original-key effect` |
+
+<details>
+<summary>Campanhas históricas detalhadas: determinismo, stress, falhas, ferramentas e comparação da outbox</summary>
 
 ## GNU parallel: vinte suítes completas em sequência
 
@@ -780,15 +810,160 @@ Em checkout isolado baseado em `a98d1e6`, com os sete arquivos pertinentes iguai
 
 O check desse staging passou em **06:47:50 a 06:47:58 UTC**: Biome e TypeScript aprovados, **189 testes unitários, zero falhas e 1.577 asserções**. Esses resultados são verificações dirigidas do staging; não representam o commit final, uma nova campanha full ou uma nova execução AWS. Os gates finais deverão identificar o commit efetivamente entregue.
 
+</details>
+
 ## Relatório visual e fronteiras de aceitação
 
-O [relatório HTML offline](load-report/index.html) e os SVGs incorporados em [load-test.md](load-test.md) usam somente os nomes permitidos de agregados. A população nominada contém uma QUICK AWS e dois FULL da mesma fonte a98/hash36b. A QUICK tem core aprovado; os dois FULL permanecem excluídos integralmente, com resultado e verificação finais ausentes. A seleção não é taxa de aprovação de todos os smokes/diagnósticos. Mistura de fonte ou hash, inclusive em execução reprovada, interrompe a geração.
+O [índice HTML offline](load-report/index.html) reúne três recortes independentes: os
+[FULL locais A/B/C](load-report/local/index.html), o [FULL3 AWS](load-report/aws/index.html)
+e o [QUICK histórico a98](load-report/historical/index.html). Os arquivos abrem sem servidor ou
+biblioteca externa. As fontes, a aceitação e os limites de cada recorte acompanham os gráficos.
 
-A/B/C históricos, a comparação rejeitada da outbox, o snapshot forense e os experimentos manuais mantêm seus registros nas seções correspondentes; não são fontes alternativas para preencher lacunas da coorte desenhada. Amostras ausentes/NaN permanecem gaps; percentis de réplicas não são promediados, filas replicadas usam máximo por instante e rates alinhadas usam soma. Não se apresenta comparação full local/AWS, três rounds AWS ou capacidade sustentada sem evidência aprovada.
+O painel local preserva três FULL históricos da fonte `06e6165` e do hash de carga `c99c4ac6…`.
+O painel AWS preserva uma única rodada FULL aprovada da quarta sessão, com aplicação `d52abed`,
+hash `0d029aec…` e correção do health check do ALB aplicada antes da medição. Os dois FULL anteriores
+dessa sessão continuam reprovados. Os resultados e as condições completos estão em
+[load-test.md](load-test.md) e [load-test-aws.md](load-test-aws.md).
+
+A população do painel histórico a98 continua sendo uma QUICK AWS e dois FULL nominados da mesma
+fonte/hash. A QUICK é diagnóstica e tem core aprovado; os dois FULL permanecem excluídos integralmente,
+com resultado e verificação finais ausentes. Esse recorte não é a taxa de aprovação de todos os smokes
+ou diagnósticos, e a aprovação posterior do FULL3 não preenche suas lacunas. O renderer histórico
+recusa misturas de fonte ou hash, inclusive em execuções reprovadas.
+
+A/B/C, a comparação rejeitada da outbox, o snapshot forense e os experimentos manuais mantêm seus
+registros próprios. Amostras ausentes ou NaN permanecem lacunas; percentis de réplicas não são
+promediados, filas replicadas usam máximo por instante e rates alinhadas usam soma. Não se apresenta
+comparação de FULL local/AWS sob a mesma fonte e metodologia, três FULL AWS ou capacidade sustentada.
+Os descartes do gerador AWS também impedem apresentar os alvos configurados como taxas atingidas.
 
 ## Gates finais
 
-Os comandos finais obrigatórios, em clone limpo do commit entregue, continuam `bun install --frozen-lockfile`, `bun run check`, `bun run test`, `bun run test:failure` e `bun run test:load`. A dispensa específica de nova GNU20 não dispensa nenhum desses comandos. Scans de segredos, revisões e handoff mantêm evidências próprias, atribuídas às respectivas fontes. A demo literal abaixo cobre o recorte executado do README; não herda nem substitui o resultado dos cinco gates no último commit entregue.
+Os comandos finais obrigatórios são `bun install --frozen-lockfile`, `bun run check`, `bun run test`,
+`bun run test:failure` e `bun run test:load`, executados em clone limpo. A dispensa específica de nova
+GNU20 não dispensa esses comandos. Scans de segredos, revisões e demo literal têm recibos próprios.
+
+### Gates locais em `d52abed`
+
+Em 02/11/2026, de **10:44:01.176 a 11:01:35.805 UTC**, o clone limpo de
+`d52abedad905f02c03c5a10ba5f16598271ef888`, criado sob `$HOME/.cache`, passou os cinco comandos.
+Todos os recibos registram `workingTreeClean=true`, `sourceVerified=true` e exit 0. O PATH permitia
+somente Bun, Docker e utilitários básicos de shell; essa restrição de busca não equivale a um sandbox
+contra executáveis por caminho absoluto ou ferramentas internas dos containers. PostgreSQL e
+MiniStack foram reais, com três APIs, três consumers e dois workers nas suítes aplicáveis.
+
+| Comando | Resultado observado na fonte d52abed |
+| --- | --- |
+| `bun install --frozen-lockfile` | PASS, exit 0. |
+| `bun run check` | Biome e TypeScript PASS; 202 testes unitários, zero falhas e 1.666 asserções. |
+| `bun run test` | Unidade: 202/0/1.666; integração: 178/0/7.105; concorrência: 13/0/1.549, em PASS/FAIL/asserções. |
+| `bun run test:failure` | 11 PASS, zero falhas e 1.779 asserções. |
+| `bun run test:load` | QUICK completo aprovado; oráculo 1 PASS, zero falhas e 2.006 asserções. |
+
+O QUICK `2026-11-02T10-58-40-637Z-88434e1f` teve `passed=true` e `partial=false`: **1.001 wallets,
+3.251 transações processadas e lançamentos, 6.502 eventos e 1.000 inbox**, com zero inbox inacabada,
+efeitos duplicados, outbox não publicada e DLQ. O projeto local `wagering-test` terminou com zero
+containers, redes e volumes. Essa limpeza é exclusivamente local; não declara remoção de recursos AWS.
+
+O manifesto externo `execution/evidence/task-13-final-gates-4.json`, SHA256
+`78464a6c090c09cd2b0453cc820800be72cfe5f6c8e6253aec1915ef24bfce80`, reúne 13 recibos aprovados:
+clone, cinco comandos, comparação dos blocos/dependências do README, opções literais, resumo QUICK,
+inventário opaco, imagem do scanner e limpeza. Seus 13 hashes foram conferidos na revisão documental,
+sem ler payloads privados. Os scans literais de histórico e árvore deram zero findings; a lista manual
+B15 foi consultada, sem iniciar campanha. O fechamento oficial foi adotado em
+`root-task13-official-final-adoption-1.json`, às **11:19:42.575 UTC**, para a mesma fonte.
+A execução oficial separada contém 5.013 asserções de integração; esse número não substitui as
+7.105 asserções do gate literal acima.
+
+A CI cobre push e pull request com Bun 1.4.3, instalação congelada, `check` (lint, tipos e unidade),
+integração, concorrência e Gitleaks. O conteúdo versionado coincide com o SHA256
+`53e99bd606f6ac2b3ca1134faf070cc3845e3b21338389ef4a129661cd02844f` da validação local:
+parse YAML, 19 verificações estruturais e seis passos ShellCheck aprovados. `actionlint` não estava
+disponível; esse registro não é validação de toda a semântica do GitHub nem execução remota de Actions.
+
+Os 19 corpos Bash do README e suas dependências pertinentes foram comparados no clone d52abed.
+B15/B17/B18 foram executados nesse clone; B01–B13/B16/B19 conservam execuções históricas,
+reutilizadas somente pelo vínculo verificado de corpos e dependências. A dispensa de nova GNU20
+permanece explícita. A revisão ampla independente da Task 13 encerrou na fonte `4f304d6`, com
+201 caminhos conferidos e sem achado Critical, Important ou novo Minor. A adoção final reutiliza
+esse escopo verificado; esta revisão documental é direcionada e não inicia outra auditoria ampla.
+
+A revisão posterior modifica documentação, visualizações e a correção de infraestrutura descrita no
+relatório AWS. Enquanto essas alterações permanecerem no WIP, **não há novo commit de entrega nem
+novos gates atribuídos a ele**. Os resultados d52abed permanecem válidos para sua fonte e não são
+renomeados. Os comandos de reprodução e renderização alterados exigem sua verificação dirigida;
+este documento não declara nova execução de containers, nova campanha de carga ou CI remota.
+
+### Verificação da revisão documental e visual
+
+A revisão posterior de 02/11/2026 passou `bun run check`: lint e tipos aprovados,
+**209 testes unitários, zero falhas e 1.711 asserções**. Esse total inclui os cinco
+novos testes de campanhas FULL e os dois testes do preview HTTP; o recorte do renderer
+passou **31 testes**. O lint
+terminou sem erros e conserva avisos não bloqueantes. Não foram repetidas as suítes
+com containers ou as campanhas de carga: a aplicação financeira e seus instrumentos
+de execução não foram alterados por esta revisão.
+
+Os dois comandos de reprodução a partir das projeções versionadas local/AWS foram
+executados e geraram HTML idêntico byte a byte ao entregue. O bloco histórico B16
+também foi executado novamente, aprovando o QUICK e excluindo os dois FULL incompletos;
+seus cinco SVGs coincidem com o arquivo histórico, cujo HTML só recebeu ajuste dos
+links relativos. Os 19 corpos Bash do README continuam idênticos aos da fonte d52.
+
+O Chromium conferiu os cinco HTML em desktop/mobile e claro/escuro: **20 observações**,
+sem requisições externas, erro JavaScript ou overflow da página. A conferência adicional
+dos detalhes dos gráficos cobriu quatro combinações local/AWS e desktop/mobile no tema
+escuro, após corrigir o contraste dos SVGs. A arquitetura também passou a verificação
+dos seletores HTTP/SQS, abas e navegação por teclado. A revisão independente dos textos,
+links e da nova lógica de renderização é dirigida a este escopo.
+
+A verificação posterior com Playwright abriu os detalhes dos gráficos nos 20 cenários e
+executou **161 cliques reais**: os 81 links no desktop e os 80 visíveis no mobile.
+Todos passaram, incluindo 22 fragmentos HTML, o diretório de código e o download do Compose.
+Uma ocorrência adicional de link fica intencionalmente oculta no mobile; as alternativas
+visíveis foram verificadas. Os controles HTTP/SQS e as abas local/AWS também passaram
+nos quatro modos, com navegação por teclado. Os três links do painel histórico para
+fragmentos Markdown abriam o arquivo cru sem saltar à seção; seus destinos foram ajustados
+para os documentos completos, mantendo os nomes das seções no texto. O renderer recebeu
+o mesmo ajuste e foi executado novamente: seus cinco SVGs e o HTML histórico continuam
+reproduzíveis, com somente a adaptação dos caminhos relativos para a pasta do arquivo.
+O `bun run check` posterior à correção manteve **207 testes, zero falhas e 1.693 asserções**.
+
+A abertura no host pelo portal do desktop apresentou uma fronteira diferente do
+`file://` testado dentro do container: o arquivo isolado em `/run/user/.../doc/...`
+não disponibilizava a árvore vizinha dos links relativos. O comando `bun run docs:preview`
+serve a documentação por HTTP em `0.0.0.0:4173`, com encaminhamento pela aba **Portas**
+do VS Code. A nova verificação Playwright por HTTP repetiu os **20 cenários, quatro
+cenários de controles e 161 cliques**, sem falhas, respostas HTTP de erro, requisições
+externas ou overflow. Ela valida o servidor local; o encaminhamento e o portal do
+host não foram inspecionados pelo browser do container. Os dois testes novos
+protegem a navegação e a recusa de arquivos privados, traversal e symlinks para alvos
+não servidos. Uma revisão independente dirigida aprovou mais 23 verificações em
+fixtures temporárias. O preview não inicia a aplicação nem acessa AWS ou serviços de teste.
+
+O mesmo preview foi incluído no Compose como serviço `docs`, com Bun 1.4.3,
+checkout e sistema de arquivos somente para leitura, porta 4173 em loopback e
+healthcheck HTTP. A execução real de `docker compose --env-file /dev/null -p wagering
+up -d --wait docs` iniciou somente `wagering-docs-1`, que ficou saudável; a porta
+alternativa via `DOCS_HOST_PORT` também foi validada na configuração. A revisão
+independente confirmou que o serviço fica fora dos perfis padrão, de teste e de
+carga. O `bun run check` desta alteração passou com **209 testes, zero falhas e
+1.711 asserções**. O Playwright pelo serviço do Compose repetiu os **20 cenários e
+161 cliques**, sem problemas. Depois, o tema da arquitetura foi alinhado à paleta
+escura dos demais HTMLs: outros quatro cenários desktop/mobile e claro/escuro
+aprovaram as cores, os controles, a troca dinâmica de tema e a impressão clara.
+O conteúdo fora do CSS e do metadado de tema permaneceu idêntico byte a byte,
+incluindo textos, links, marcação dos cinco SVGs e JavaScript.
+
+O Terraform foi validado em cópia externa com backend desativado: **zero erros e um
+aviso conhecido**. No provider AWS 6.71.0, remover `failure_threshold` do custom health
+faz o SDK omitir a configuração necessária ao ECS no namespace privado. A reprodução
+local confirmou esse comportamento; o valor explícito foi mantido e comentado,
+conforme a [issue do provider](https://github.com/hashicorp/terraform-provider-aws/issues/44285).
+O aviso não foi resolvido. Não houve `plan`, `apply` ou chamada à AWS nesta revisão.
+
+<details>
+<summary>Gates e demo históricos anteriores: 3fa0f86 e 4f304d6</summary>
 
 ### Gates locais em `3fa0f86`
 
@@ -816,4 +991,6 @@ A primeira tentativa foi preservada como **FAIL em B01**, antes das operações 
 
 Os cinco comandos obrigatórios do último commit, os blocos opcionais e os scans conservam seus registros próprios; a demo não constitui aprovação final da entrega.
 
-A revisão final independente da Task 13 encerrou em **07:21:22.739 UTC**, com 201 caminhos da fonte `4f304d6` conferidos antes/depois e nenhum achado Critical, Important ou novo Minor. A revisão focada única da Task 12 foi concluída separadamente. A consolidação posterior altera somente prosa dos quatro documentos, preservando os 19 corpos Bash e os arquivos executáveis; a reutilização dessas revisões e da demo se baseia nessa dependência verificada, sem atribuir os resultados históricos ao novo commit. Os gates finais continuam vinculados ao commit de entrega por seus próprios recibos.
+A revisão final independente da Task 13 encerrou em **07:21:22.739 UTC**, com 201 caminhos da fonte `4f304d6` conferidos antes/depois e nenhum achado Critical, Important ou novo Minor. A revisão focada única da Task 12 foi concluída separadamente. A consolidação que precedeu os gates d52abed preservou os corpos Bash e as dependências pertinentes segundo o recibo daquela versão. A reutilização dessas revisões e da demo depende desse vínculo verificado; alterações posteriores conservam atribuição própria. Os gates finais continuam vinculados à sua fonte por seus próprios recibos.
+
+</details>

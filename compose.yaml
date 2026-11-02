@@ -52,6 +52,31 @@ x-app: &app
     start_period: 10s
 
 services:
+  docs:
+    image: oven/bun:1.4.3
+    profiles: [docs]
+    init: true
+    user: bun
+    working_dir: /app
+    read_only: true
+    command: ["bun", "--no-env-file", "scripts/preview-docs.ts"]
+    environment:
+      BUN_CONFIG_NO_AUTO_INSTALL: "true"
+    ports: ["127.0.0.1:${DOCS_HOST_PORT:-4173}:4173"]
+    volumes: [".:/app:ro"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "--no-env-file",
+          "-e",
+          "const r=await fetch('http://127.0.0.1:4173/docs/load-report/index.html');process.exit(r.ok?0:1)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
   verification-tools:
     image: wagering-verification:local
     build:

@@ -7,7 +7,8 @@ A implementação usa Bun, TypeScript, NestJS/Fastify, MikroORM e PostgreSQL. O 
 - [Arquitetura, decisões e contratos](ARCHITECTURE.md)
 - [Testes, cenários obrigatórios e reprodução das evidências](docs/verification.md)
 - [Metodologia, resultados e limites do teste de carga](docs/load-test.md)
-- [Relatório visual offline](docs/load-report/index.html)
+- [Arquitetura visual offline](docs/architecture.html)
+- [Resultados visuais de carga: local e AWS](docs/load-report/index.html)
 
 ## Começar
 
@@ -47,6 +48,7 @@ bun --no-env-file -e 'const r=await fetch("http://127.0.0.1:3000/health/ready");
 | Prometheus | `http://127.0.0.1:9090` | profile `observability` |
 | Grafana | `http://127.0.0.1:3001` | profile `observability` |
 | Toxiproxy | `http://127.0.0.1:8474` | profile `chaos`, usado pelos testes de falha |
+| Documentação HTML | `http://127.0.0.1:4173` | profile `docs`, independente da aplicação |
 
 As réplicas não publicam portas individuais. O Nginx é a entrada HTTP e descobre as APIs pelo DNS do Docker. Para mudar a escala, ajuste `API_REPLICAS`, `CONSUMER_REPLICAS` e `WORKER_REPLICAS` e repita o mesmo `stack:up`. Essas variáveis são interpretadas pelo wrapper; a opção correspondente do Compose direto é `--scale`, não uma variável do YAML.
 
@@ -288,7 +290,8 @@ Defaults operacionais não sensíveis, alteráveis por variáveis do processo an
 | `API_REPLICAS`, `CONSUMER_REPLICAS`, `WORKER_REPLICAS` | `1`, `1`, `1` no wrapper local |
 | `API_HOST_PORT`, `POSTGRES_HOST_PORT`, `SQS_HOST_PORT`, `KEYCLOAK_HOST_PORT` | `3000`, `5432`, `4566`, `8080` |
 | `PROMETHEUS_HOST_PORT`, `GRAFANA_HOST_PORT`, `TOXIPROXY_HOST_PORT` | `9090`, `3001`, `8474` |
-| `COMPOSE_PROFILES` | perfis opcionais `observability`, `chaos`, `load`, `verification` |
+| `DOCS_HOST_PORT` | `4173`, publicada somente em loopback |
+| `COMPOSE_PROFILES` | perfis opcionais `docs`, `observability`, `chaos`, `load`, `verification` |
 | `CONSUMER_CONCURRENCY`, `SQS_BATCH_SIZE` | `10`, `10` |
 | `SQS_WAIT_SECONDS`, `SQS_VISIBILITY_SECONDS`, `SQS_MAX_RECEIVES` | `20`, `30`, `5` |
 | `SQS_RETRY_BASE_SECONDS`, `SQS_RETRY_MAX_SECONDS` | `2`, `30` |
@@ -354,19 +357,25 @@ Esses experimentos usam ferramentas containerizadas, daemon local exclusivo e ca
 
 **Manual retido encerrado:** `manual-retained-a98d1e6-1`, source `a98d1e6fe248f2e6bee4f2cf54317fc961aab062`, captura de 01/11/2026 às 23:06:21.023–23:20:13.862 UTC. Os oito seletores concluíram com resultado global PASS, filho exit 0 e source/cleanup aprovados pela captura. Os cinco comandos somam 29 PASS/0 FAIL/11.819 assertions: principal 13/0/9.422, reconciliação 1/0/288, tcpdump 1/0/56, stress 13/0/1.549 e reconciliação do stress 1/0/504. Foram reconciliados conjuntos separados de 71, 1 e 125 wallets. O `pg_activity` preserva exit 124 da ferramenta, apesar do PASS do caso; tcpdump correlaciona confirmação ORM, snapshot SQL e chamadas SDK com metadados, sem decodificar COMMIT no fio. O auditor leu artefatos, sem uma segunda consulta SQL após teardown ou inspeção Git/Docker. O PASS histórico de `manual-retained-2` em `9fab36026b375c306a70c0aabaacbd5cdc811526` permanece separado, com 29 testes e 11.939 assertions. A GNU retida encerrou seis rodadas seriais, todas exit 0/signal 0; o runner original conservou FAILED por exigir vinte, enquanto a captura comprovou source e cleanup no seu escopo. O usuário dispensou a nova GNU20 na Task 13, no roteiro literal e no handoff. O histórico d11 com vinte rodadas permanece outra campanha; não se somam as versões. O comportamento opcional de determinismo é descrito apenas como referência; não há comando de nova campanha no roteiro literal desta entrega.
 
-## Carga e limites de interpretação
+## Carga e resultados visuais
 
-O comando de carga da sequência de verificação usa `quick`. As cinco fases cobrem carteira única, mil carteiras, 10% de replays, carteira única e distribuídas simultâneas, e backlog SQS. A variável `LOAD_PROFILE` também aceita `full`, com rampas maiores e dez mil mensagens; a duração inclui seed, recuperação e drenagem, podendo superar bastante o tempo de tráfego HTTP. O runner guarda artefatos em `load/results/<runId>/`, ignorados pelo Git. A reprodução completa e os resultados históricos estão no relatório de carga.
+O roteiro de verificação usa `quick`. As cinco fases cobrem carteira única, mil carteiras, 10% de replays, carteira única e distribuídas simultâneas, e backlog SQS. `LOAD_PROFILE=full` seleciona rampas maiores e dez mil mensagens. A duração inclui preparo, tráfego, recuperação e drenagem. Os agregados completos ficam em `load/results/<runId>/`, ignorados pelo Git.
 
-O relatório distingue throughput e p50/p95/p99 do cliente, respostas transitórias, descartes do gerador, conflitos, lag e drenagem. A aceitação exige prova das identidades financeiras, ledger, inbox/outbox, reconciliação, DLQ vazia e participação das réplicas. Um resultado parcial não é aprovação. A fase HTTP mista histórica oferece duas rampas completas, dobrando a taxa agregada; não é comparação à mesma taxa total. Resultados e limitações da versão medida estão em [docs/load-test.md](docs/load-test.md); não há meta de RPS nem extrapolação para AWS/produção.
+A aceitação exige ledger e saldo reconciliados, identidades persistidas, cobertura de eventos, inbox/outbox concluídas, DLQ vazia e participação das réplicas. Um snapshot parcial ou quatro fases HTTP aprovadas não aprovam uma rodada inteira. Os métodos, as métricas e as limitações estão no [relatório de carga](docs/load-test.md).
 
-**Full retido encerrado e reprovado:** run `2026-11-01T22-25-40-451Z-d9d6e892`, source `a98d1e6fe248f2e6bee4f2cf54317fc961aab062`, perfil/alvo/cenário `full/compose/standard`. O wrapper executou em 01/11/2026 das 22:25:40.248 às 23:05:06.199 UTC e terminou FAILED / exit 1. O verificador parcial passou 1 teste/0 falhas/2.009 assertions: na fotografia salva, 90.351 transações processadas = 90.351 lançamentos, 180.702 eventos, 6.862 ainda não publicados, 9.910 inbox completos e zero efeitos financeiros duplicados contados, em 1.001 wallets observadas. Isso não comprova os 10.000 comandos SQS pretendidos, outbox final vazia, DLQ final ou participação final: os artefatos completos não foram produzidos. O timeout no gate SQS de 180 s é compatível com os dados e foi atribuído pelo responsável; o label do gate e sua última leitura não estão preservados na projeção segura, e a causa do atraso não foi estabelecida. Os três full7/8/9 aprovados continuam históricos da fonte `06e6165cb8611ec650dfc4ec947c6d4513da92cf`; não aprovam esse run nem têm seus valores finais transferidos a ele.
+O [hub HTML offline](docs/load-report/index.html) reúne páginas independentes, com gráficos, fonte e limites de interpretação:
 
-## Relatório visual offline
+| Relatório | Evidência representada |
+| --- | --- |
+| [FULL local A/B/C](docs/load-report/local/index.html) | Três rodadas históricas aprovadas, fonte `06e6165 / c99c4a…`. |
+| [FULL AWS](docs/load-report/aws/index.html) | Uma rodada FULL3 aprovada, fonte `d52abed / 0d029a…`: 80.976 efeitos financeiros, 161.952 eventos e 10.000 comandos SQS. |
+| [QUICK AWS histórico](docs/load-report/historical/index.html) | Diagnóstico smoke5 da fonte `a98d1e6 / 36b77c…`, preservado com os FULL reprovados excluídos dos gráficos. |
 
-O HTML e os cinco SVGs pré-gerados em [docs/load-report/index.html](docs/load-report/index.html) abrem diretamente por `file://`, sem servidor, rede ou biblioteca externa. Os seis artefatos foram gerados e inspecionados em quatro modos de navegador: claro e escuro, desktop e mobile. Os testes do renderer passaram com 26 testes e 87 asserções no candidato validado. O renderer é um arquivo Bun independente; não adiciona dependência nem script ao `package.json`.
+As instruções para abrir os relatórios no navegador do host ficam em [Servidor de documentação](#servidor-de-documentação), no final deste README.
 
-Para regenerar, forneça três diretórios externos de agregados e um diretório de saída **novo**. Os artefatos financeiros brutos e os diretórios de entrada não acompanham o clone. Defina `AWS_QUICK_AGGREGATES`, `LOCAL_FULL_AGGREGATES`, `AWS_FULL_AGGREGATES` e `RENDER_OUTPUT` com esses caminhos no ambiente da sessão; o comando não possui defaults privados ou fallback com números embutidos:
+Cada HTML também abre sem servidor quando o navegador tem acesso à árvore completa do checkout. A abertura de um arquivo isolado pelo portal do desktop (`/run/user/.../doc/...`) pode impedir o acesso aos links relativos; nesse caso, use o preview HTTP. A [reprodução a partir das projeções versionadas](docs/load-test.md#relatório-visual-e-reprodução-dos-gráficos) usa Bun e dispensa o cache privado. Fontes e instrumentos diferentes impedem tratar esses painéis como comparação controlada local/AWS. O FULL local retido de `a98d1e6` permanece reprovado e separado dos três FULL históricos aprovados.
+
+O renderer também conserva o modo histórico abaixo. Para reproduzi-lo, defina `AWS_QUICK_AGGREGATES`, `LOCAL_FULL_AGGREGATES` e `AWS_FULL_AGGREGATES` com diretórios externos dos agregados originais, e `RENDER_OUTPUT` com uma pasta de saída nova:
 
 ```bash
 BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true \
@@ -377,29 +386,23 @@ bun --no-env-file scripts/render-load-report.ts \
   --output-dir "$RENDER_OUTPUT"
 ```
 
-O CLI exige as quatro opções; recusa destino existente, entradas ausentes, provas inválidas ou mistura de identidade. Ele gera `index.html`, `overview.svg`, `hot_wallet.svg`, `distributed_wallets.svg`, `replays.svg` e `hot_plus_distributed.svg`. Lê somente agregados autorizados e nunca fixtures, respostas, headers ou payloads completos. A regeneração é opcional para ler o relatório pré-gerado; registre sua execução com a fonte, os agregados externos de entrada e os hashes dos artefatos gerados.
-
-O painel quantitativo usa apenas smoke5 **QUICK diagnóstico**, uma execução da coorte `a98/36b77c…`. Os dois fulls dessa coorte são excluídos integralmente por ausência dos agregados finais obrigatórios; não se reaproveitam suas fases para construir uma rodada aceita. A/B/C da coorte `c99…` são contexto histórico textual separado. Nessa coorte histórica não há três fulls aceitos nem comparação full local/AWS disponível. Os resultados da terceira sessão ficam separados no [relatório AWS](docs/load-test-aws.md#terceira-sessão-fonte-e-resultados). Os cinco pontos HTTP de cada QUICK ficam antes do recorte de 30 s e o único ponto Prometheus SQS precede o produtor; as respectivas séries estáveis e curva de throughput SQS são indisponíveis, sem interpolação ou zero inventado.
+Nesse modo, as quatro opções são obrigatórias. O CLI recusa destino existente, entradas ausentes, provas inválidas ou mistura de fonte; gera HTML e cinco SVGs, lendo apenas agregados autorizados. Os dados financeiros brutos não acompanham o clone.
 
 ## Extensão AWS opcional
 
-A [operação AWS](infra/aws/README.md) descreve uma extensão separada, com endpoints privados, imagens por digest, manifesto de origem fixado e infraestrutura própria. O [relatório AWS](docs/load-test-aws.md) registra os resultados observados e as limitações da tentativa. Ela não acrescenta AWS CLI, conta AWS ou ferramentas de cloud aos requisitos do roteiro local. O bootstrap local continua criando filas; na extensão, `BOOTSTRAP_CREATE_QUEUES=false` deixa essa propriedade com o Terraform. A ausência do par de credenciais estáticas permite a role pela cadeia padrão do SDK.
+A [operação AWS](infra/aws/README.md) descreve endpoints privados, imagens por digest, manifesto de origem e infraestrutura própria. Não acrescenta ferramentas de cloud aos requisitos do roteiro local. No alvo remoto, `BOOTSTRAP_CREATE_QUEUES=false` deixa as filas com o Terraform, e a cadeia padrão do SDK usa a role quando o par de credenciais estáticas está ausente.
 
-Para PostgreSQL remoto, `DB_SSL_CA_FILE` habilita TLS com CA e identidade verificadas. O bundle público de `us-east-2` está em [docker/aws/us-east-2-bundle.crt](docker/aws/us-east-2-bundle.crt); sua origem e hash estão em [ARCHITECTURE.md](ARCHITECTURE.md). A readiness e o sampler continuam consultando PostgreSQL e as três filas. A role da API recebe somente `sqs:GetQueueUrl` e `sqs:GetQueueAttributes` nessas filas, sem enviar, receber ou remover mensagens.
+`DB_SSL_CA_FILE` habilita PostgreSQL com TLS e identidade verificada. O bundle público de `us-east-2` está em [docker/aws/us-east-2-bundle.crt](docker/aws/us-east-2-bundle.crt); origem e hash constam na [arquitetura](ARCHITECTURE.md). A readiness consulta PostgreSQL e as três filas; a role da API recebe apenas `sqs:GetQueueUrl` e `sqs:GetQueueAttributes` nessas filas. O ALB usa liveness para avaliar o processo; a admissão da carga continua exigindo readiness e os oito targets saudáveis.
 
-No alvo remoto, um observador real consome eventos e persiste inbox/efeito por `eventId`; o oráculo compara as identidades esperadas e observadas nos dois sentidos, além da prova financeira. Um resultado parcial só comprova os efeitos já persistidos que conseguiu verificar e mantém a campanha global reprovada. A observação remota não modifica o fluxo local, que deixa a fila de eventos para destinatários externos.
+O [FULL AWS aprovado](docs/load-test-aws.md#quarta-sessão-full3-aprovado) terminou com prova financeira integral e participação 3/3/2. Os retries do produtor remoto e do ACK do observer recuperaram throttling SQS real. Houve **22.283 descartes reportados pelo gerador**: não há entrega demonstrada dos alvos de 500 req/s, três FULL AWS aprovados, patamares sustentados ou capacidade máxima. Os FULL anteriores falhos e a QUICK da terceira sessão estão resumidos no [histórico AWS](docs/load-test-aws.md#terceira-sessão-fonte-e-resultados).
 
-Os patamares fixos de 50/100 requisições por segundo são um cenário separado das rampas `full`: duram 180 s, separam os primeiros 30 s nas métricas estáveis e preservam todas as identidades na prova financeira. Não estabelecem capacidade máxima nem isolam o efeito de trocar MiniStack por SQS.
+O observador remoto persiste inbox/efeito por `eventId`, e o oráculo compara conjuntos esperados e observados nos dois sentidos. Esse instrumento não muda a integração local, que deixa a fila de eventos para destinatários externos. A leitura posterior dos agregados não constitui nova verificação SQL independente.
 
-**Resultados AWS históricos de a98:** smoke5 QUICK diagnóstico aceito; FULL1 FAILED após quatro fases HTTP, ao entrar no backlog SQS, com `RequestThrottled` preservado e operação SDK terminal não diretamente identificada. Não existem `result.json` e `verification.json` completos desse full. A prova posterior READ ONLY/REPEATABLE READ/TLS reconciliou as 1.001 wallets, sem negativos, inconsistências, duplicatas ou órfãos contados; encontrou 74.210 transações processadas/lançamentos, 148.420 eventos e 11.848 eventos ainda sem efeito observado. Essa fotografia financeira não comprova cobertura completa de eventos, dez mil comandos ou uma rodada full aceita. Full2, full3 e patamares ficaram bloqueados pelo predecessor reprovado.
+## Estado da verificação
 
-**Terceira sessão AWS, fonte `3fa0f86`:** A QUICK foi aceita como diagnóstico; a FULL1 falhou, com snapshot financeiro parcial de 66.284 efeitos e 132.568 eventos, sem resultado FULL integral nem fase produtora SQS. FULL2, FULL3 e os seis patamares não foram iniciados devido à falha do predecessor; não há capacidade FULL demonstrada. Os identificadores, provas e limites observados estão no [relatório AWS](docs/load-test-aws.md#terceira-sessão-fonte-e-resultados). A nova campanha não reclassifica o FULL1 histórico nem reutiliza suas fases como uma rodada aprovada.
+A **Task 13 foi concluída para `d52abed`**. Os cinco gates em clone limpo com PATH restrito passaram: instalação congelada, `check`, `test`, `test:failure` e QUICK `test:load`. Foram 202 testes unitários, 178 de integração, 13 de concorrência e 11 de falha, sem falhas. O QUICK reconciliou 1.001 carteiras, 3.251 efeitos e 6.502 eventos, com pendências e DLQ zeradas. A [matriz de requisitos e os recibos](docs/verification.md#gates-locais-em-d52abed) detalham as fontes, as asserções e os comandos do README.
 
-**Verificação do candidato:** o clone isolado passou `check` com 193 testes/1.611 asserções e a integração real com 177 testes/6.703 asserções. A revisão focada da Task 12 encerrou sem achados Critical ou Important. Esses resultados pertencem ao candidato correspondente. A demo literal executou 14 blocos deste README em clone limpo de `4f304d6`: B01–B13 e B19 passaram em 78,605 s, incluindo HTTP, SQS, reconciliação financeira, migrations e limpeza final com zero containers, redes e volumes. Os cinco comandos finais exigem evidência própria no último commit entregue. Os artefatos visuais publicados não mudam o resultado de qualquer campanha.
-
-**Gates locais em `3fa0f86`:** um clone limpo com PATH restrito passou instalação congelada, `check`, `test`, `test:failure` e QUICK `test:load`: 202 testes unitários, 178 de integração, 13 de concorrência e 11 de falha, todos sem falhas. O oráculo QUICK aprovou 1.001 wallets, 3.251 efeitos financeiros e 6.502 eventos, com zero efeitos duplicados, inbox inacabada, outbox não publicada e DLQ. Os 19 corpos Bash do README permaneceram idênticos aos comprovados; a lista manual e as duas varreduras Gitleaks também passaram no clone. Essa evidência pertence a `3fa0f86`; os gates do commit entregue têm recibos próprios. Detalhes em [verificação](docs/verification.md#gates-locais-em-3fa0f86).
-
-A prevenção de segredos mantém as regras padrão do scanner e permite somente os quatro defaults locais exatos já existentes. Arquivos `*.key`/`*.pem` não são versionados; o teste TLS gera chaves temporárias em runtime. O histórico, a árvore e os artefatos de execução têm escopos de varredura próprios. As classificações de falsos positivos ficam vinculadas aos fingerprints exatos de seus contextos e arquivos, sem exclusão ampla de caminhos ou regras. O scan pós-AWS original preservado registrou 30 findings: dez previamente conhecidos e vinte cópias dos quatro seletores públicos CloudWatch, verificadas por igualdade exata de linha/contexto em RAM. Isso não é zero findings bruto. O scanner externo v4 reconhece somente essas provas exatas e reprova qualquer achado extra ou alterado; os resultados de histórico, árvore, execução e artefatos opacos mantêm registros próprios, vinculados às respectivas fontes. Nenhum valor é publicado ou considerado seguro apenas pelo caminho.
+A CI está configurada para push e pull request; sua validação local não representa execução remota no GitHub. As alterações documentais, visuais e de infraestrutura posteriores têm verificações próprias e não constituem novo commit com aqueles cinco gates. Os resultados históricos continuam vinculados às versões medidas.
 
 ## Varredura opcional de segredos
 
@@ -433,3 +436,36 @@ docker compose --env-file /dev/null -p wagering down --volumes --remove-orphans
 ```
 
 O Compose é demonstrativo: usa Keycloak `start-dev`, não configura TLS, publica portas de API/PostgreSQL/MiniStack/Keycloak e contém defaults de desenvolvimento. Não o exponha como implantação de produção. A observabilidade não preserva seu histórico após recriação. Entrega de eventos é *at-least-once*: um crash após confirmação SQS e antes da marcação SQL pode repetir `eventId`; consumidores externos precisam deduplicá-lo. Os grupos FIFO usam `aggregateId`, e não há ordem total entre tipos/agregados nem garantia adicional de ordem entre publishers concorrentes. A aplicação não consome a fila de eventos; sua retenção e integração com destinatários externos ficam fora deste fluxo local.
+
+## Servidor de documentação
+
+Para servir os HTMLs e navegar entre seus links, execute na raiz do repositório:
+
+```bash
+docker compose --env-file /dev/null -p wagering up -d --wait docs
+```
+
+O serviço `docs` usa a imagem Bun 1.4.3 e monta o checkout somente para leitura. Precisa apenas de Docker Compose no host, sem build ou instalação de dependências; o primeiro início pode baixar a imagem. O comando inicia somente a documentação, sem subir a aplicação, PostgreSQL ou SQS.
+
+| Página | Endereço |
+| --- | --- |
+| Central de relatórios | <http://localhost:4173/docs/load-report/index.html> |
+| Arquitetura visual | <http://localhost:4173/docs/architecture.html> |
+| FULL local | <http://localhost:4173/docs/load-report/local/index.html> |
+| FULL AWS | <http://localhost:4173/docs/load-report/aws/index.html> |
+
+No Dev Container, encaminhe a porta **4173** pela aba **Portas** do VS Code se ela não aparecer automaticamente. O serviço publica a porta somente em loopback. Para escolher outra porta, por exemplo 4174:
+
+```bash
+DOCS_HOST_PORT=4174 docker compose --env-file /dev/null -p wagering up -d --wait docs
+```
+
+Nesse caso, use `http://localhost:4174` e encaminhe 4174 no Dev Container. Alterações nos arquivos ficam disponíveis sem reconstruir a imagem; atualize a página no navegador.
+
+O perfil opcional `docs` mantém o preview fora das suítes de integração e carga. Para iniciá-lo junto da stack, inclua `docs` em `COMPOSE_PROFILES`, por exemplo `COMPOSE_PROFILES=docs,observability bun run stack:up`. Para parar somente a documentação:
+
+```bash
+docker compose --env-file /dev/null -p wagering stop docs
+```
+
+Como alternativa sem Docker, `bun run docs:preview` inicia o mesmo servidor com Bun no host; aceita `--port 4174`. Use uma forma por porta. Os HTMLs também abrem diretamente por `file://` quando o navegador tem acesso à árvore completa de arquivos; abrir um arquivo isolado pelo portal do desktop pode impedir a navegação pelos links relativos.

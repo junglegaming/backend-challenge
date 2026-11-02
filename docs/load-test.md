@@ -12,14 +12,26 @@ A carga completa local posterior e a primeira carga completa AWS de `a98d1e6`
 **falharam**. A rodada AWS QUICK passou somente seus próprios gates. Nenhum desses
 resultados é apresentado como medição dos instrumentos corrigidos posteriormente.
 
-O [relatório visual](load-report/index.html) lê uma única coorte de fontes e exclui
-integralmente runs reprovados, parciais ou sem prova final. Na seleção nominada de
-três diretórios da coorte `a98d1e6`/`36b77c2a`, há **1/1 QUICK elegível e 0/2 FULL
-elegíveis**. Esse denominador não representa todos os ensaios de setup e diagnóstico.
-Nessa coorte histórica não existe comparação FULL local/AWS aprovada nem variação entre três FULL AWS.
-A ausência desses resultados é exibida como indisponibilidade, sem curva estimada.
+O [índice visual](load-report/index.html) separa três recortes: os
+[FULL locais A/B/C](load-report/local/index.html), o
+[FULL3 AWS final aprovado](load-report/aws/index.html), da fonte `d52abed` e carga
+`0d029aec`, e o [painel QUICK histórico](load-report/historical/index.html), da
+coorte `a98d1e6`/`36b77c2a`. Somente esse último mantém o denominador histórico
+**1/1 QUICK elegível e 0/2 FULL nominados elegíveis**. Ele não representa o
+resultado final da AWS nem todos os ensaios de setup e diagnóstico.
 
-A terceira sessão usa a fonte `3fa0f86` e mantém seus resultados no [relatório AWS](load-test-aws.md#terceira-sessão-fonte-e-resultados), com identidade e provas próprias. O painel HTML/SVG continua histórico da coorte a98/36b; não incorpora a nova fonte nem combina fases entre campanhas.
+O FULL3 AWS passou com **80.976 efeitos financeiros, 161.952 eventos na outbox e
+DLQ zero**. Os **22.283 descartes reportados** limitam a capacidade demonstrada;
+não se afirma que a aplicação sustentou 500 req/s. Há uma rodada FULL AWS aprovada,
+sem três repetições para estimar variação. As fontes, os recursos e os instrumentos
+locais/AWS diferem, portanto as páginas não calculam uma comparação de desempenho
+entre ambientes. A metodologia e as provas finais estão no [relatório AWS](load-test-aws.md).
+
+O QUICK local posterior associado externamente à fonte `d52abed` passou com
+3.251 efeitos financeiros e 6.502 eventos na outbox. Seu `environment.json` não
+contém `gitHead`; a associação de fonte depende da evidência externa final de
+Task 13. Esse gate funcional não é uma quarta rodada FULL nem uma medição de
+desempenho comparável às rodadas A/B/C.
 
 O detalhe de concorrência, falhas, recuperação e determinismo está em
 [verification.md](verification.md). A candidata de SQL em lote foi **rejeitada e
@@ -663,26 +675,68 @@ assertion, reconciliação, identidade ou limite violado continua a mesma.
 
 ## Relatório visual e reprodução dos gráficos
 
-O [HTML autossuficiente](load-report/index.html) funciona por `file://`, sem rede,
-em português, nos temas claro/escuro e em tela estreita. Somente runs aprovados,
-não parciais e com a mesma identidade de fontes são elegíveis. As séries usam
-unidades, eixos Y a partir de zero, fronteiras de fase e lacunas explícitas.
-Não existe downsampling que esconda picos nem média entre percentis de rodadas.
-Os gráficos SVG permitem leitura direta no GitHub; o relatório completo explica
-as métricas indisponíveis e as duas exclusões FULL desta seleção.
+O [índice HTML](load-report/index.html) abre as páginas
+[local](load-report/local/index.html), [AWS](load-report/aws/index.html) e
+[histórica QUICK](load-report/historical/index.html). Para navegar no browser do host,
+execute `docker compose --env-file /dev/null -p wagering up -d --wait docs` na raiz
+do repositório e abra `http://localhost:4173/docs/load-report/index.html`. O serviço
+`docs` usa Bun 1.4.3, monta os arquivos somente para leitura e sobe sozinho,
+sem dependências da aplicação. Seu perfil opcional o mantém fora das campanhas
+de teste. `DOCS_HOST_PORT` altera a porta publicada; para parar somente o preview,
+use `docker compose --env-file /dev/null -p wagering stop docs`. A alternativa
+sem Docker continua sendo `bun run docs:preview`. No Dev Container, encaminhe a
+porta escolhida na aba **Portas** do VS Code se necessário. Cada página também funciona por
+`file://` quando o navegador tem acesso à árvore completa; o portal do desktop pode
+compartilhar só o arquivo aberto e impedir os links vizinhos. As páginas ficam
+em português, nos temas claro/escuro e em tela estreita. Os
+gráficos são SVG inline: o HTML é autossuficiente, sem JavaScript ou bibliotecas
+externas. As fontes de cada campanha permanecem visíveis, sem juntar fases de
+fontes diferentes.
 
-![Resumo da coorte QUICK AWS aprovada e exclusões FULL](load-report/overview.svg)
+As páginas FULL incluem quantis HTTP por fase, vazão observada, descartes do
+gerador, séries de commits, erros de processamento, conflitos de lock, lag da
+outbox, backlog SQS e o oráculo financeiro final. Os gráficos usam eixos Y a partir
+de zero e fronteiras de fase. Não há suavização, downsampling que esconda picos ou
+média entre percentis. `NaN` e amostras ausentes são lacunas. Uma métrica ausente
+continua `UNKNOWN`, incluindo `dropped_iterations` ausente no resumo k6, mesmo
+quando o runner registrou zero por fallback. As séries `rate()` mantêm sua janela
+anterior: o gráfico mostra os primeiros 30 s, sem chamá-los de regime estável.
 
-![Séries da fase de carteira concentrada, AWS QUICK](load-report/hot_wallet.svg)
+As projeções fechadas [local](load-report/local/campaign.json) e
+[AWS](load-report/aws/campaign.json) são versionadas com o relatório. Contêm
+somente contagens, quantis, configuração numérica, séries anônimas e SHA-256 dos
+agregados originais. Não contêm payloads financeiros, fixtures, identificadores
+de infraestrutura ou caminhos privados. Com Bun 1.4.3, a partir da raiz do clone,
+é possível recriar cada HTML sem os caches originais, Docker ou AWS. Os destinos
+abaixo precisam ainda não existir:
 
-![Séries da fase de carteiras distribuídas, AWS QUICK](load-report/distributed_wallets.svg)
+A contagem de rodadas, a fonte, a janela UTC, a topologia e os parâmetros numéricos
+são derivados da projeção. Detalhes externos, como o tipo da instância RDS e a
+mudança do health check do ALB, aparecem somente quando a identidade corresponde
+à campanha conhecida; para outras entradas esses metadados permanecem `UNKNOWN`.
 
-![Séries da fase de replays, AWS QUICK](load-report/replays.svg)
+```bash
+BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true bun --no-env-file scripts/render-load-report.ts \
+  --campaign-data docs/load-report/local/campaign.json \
+  --output-dir /tmp/wagering-load-report-local
+```
 
-![Séries da fase mista, AWS QUICK](load-report/hot_plus_distributed.svg)
+```bash
+BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true bun --no-env-file scripts/render-load-report.ts \
+  --campaign-data docs/load-report/aws/campaign.json \
+  --output-dir /tmp/wagering-load-report-aws
+```
 
-Os artefatos financeiros individuais e os resultados brutos ficam fora do Git.
-Regenerar requer fornecer os diretórios com agregados permitidos ao script
-`scripts/render-load-report.ts`, sem instalar dependências adicionais. Ele não lê
-respostas JSONL, fixtures, payloads, manifests privados ou credenciais. A
-reprodução exata da CLI é descrita no próprio relatório após a implementação.
+Para recalcular a projeção a partir dos agregados originais, o mesmo script aceita
+`--campaign local` ou `--campaign aws`, um `--run DIR` para cada rodada e
+`--output-dir NEW_DIR`. Cada campanha precisa ser FULL, aprovada, não parcial e
+compartilhar fonte e hash de carga. O renderer abre somente nomes literais de
+`environment.json`, `result.json`, `verification.json`, resumos k6, counters e
+Prometheus permitidos. Não enumera o diretório, não lê JSONL, fixtures, manifests
+privados ou credenciais. Provas financeiras inconsistentes, hash divergente,
+diretórios repetidos, symlinks e destino existente/sobreposto são recusados.
+
+A CLI histórica com `--aws-quick`, `--local-full`, `--aws-full-1` e `--output-dir`
+continua disponível para reproduzir o recorte `a98d1e6`/`36b77c2a` a partir de
+seus três diretórios. Seus SVGs exportados estão em
+[historical/](load-report/historical/index.html), com as exclusões originais.

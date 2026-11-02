@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Mapa interativo da arquitetura implementada do Distributed Wagering Processor: módulos, transação financeira, idempotência, outbox e recuperação.">
+  <title>Arquitetura · Jungle Wagering</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --navy: #0f1727; --sand: #e1dccc; --coral: #c73b47; --coral-soft: #fdebed;
+      --blue: #005fbe; --blue-soft: #e7f1fc; --green: #236442; --green-soft: #e7f3ec;
+      --amber: #94501e; --amber-soft: #fff1e3; --purple: #634597; --purple-soft: #f0ebf8;
+      --bg: #f8f9fa; --paper: #fff; --ink: #141b29; --muted: #546174; --line: #dce1e7;
+      --heading: var(--navy); --link: var(--blue);
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --radius: 18px; --dock: 248px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 28px; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font: 16px/1.65 var(--sans); }
+    a { color: var(--link); text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+    button, summary, a { -webkit-tap-highlight-color: transparent; }
+    :focus-visible { outline: 3px solid #be4c00; outline-offset: 4px; border-radius: 4px; }
+    button { font: inherit; }
+    p { margin: 0 0 18px; }
+    h1, h2, h3, h4 { color: var(--heading); line-height: 1.16; letter-spacing: -.035em; margin: 0; }
+    h1 { font-size: clamp(38px, 5.1vw, 64px); max-width: 840px; font-weight: 750; }
+    h2 { font-size: clamp(28px, 3.3vw, 39px); margin-bottom: 16px; }
+    h3 { font-size: 20px; margin-bottom: 12px; letter-spacing: -.02em; }
+    h4 { font-size: 16px; margin-bottom: 8px; letter-spacing: -.01em; }
+    code, .mono { font-family: var(--mono); font-size: .88em; overflow-wrap: anywhere; }
+    code { padding: 2px 5px; border: 1px solid #e3e7ec; border-radius: 5px; background: #f3f5f8; }
+    strong { font-weight: 700; }
+    .skip { position: absolute; left: 16px; top: -80px; padding: 12px 20px; background: var(--paper); z-index: 30; }
+    .skip:focus { top: 16px; }
+    .dock { position: fixed; inset: 0 auto 0 0; z-index: 10; width: var(--dock); background: var(--navy); color: #dce3ee; padding: 34px 22px 24px; display: flex; flex-direction: column; overflow-y: auto; }
+    .brand { display: flex; align-items: center; gap: 12px; color: white; text-decoration: none; margin: 0 8px 40px; }
+    .brand-mark { width: 35px; height: 35px; border: 1px solid #556076; border-radius: 10px; display: grid; place-items: center; font-size: 17px; font-weight: 800; color: var(--sand); }
+    .brand strong { display: block; letter-spacing: .04em; font-size: 13px; line-height: 1.4; }
+    .brand span:last-child { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: #aebbd0; }
+    .nav-label { color: #aebbd0; text-transform: uppercase; font-size: 10px; letter-spacing: .17em; margin: 0 12px 12px; }
+    .dock nav { display: grid; gap: 4px; }
+    .dock nav a { display: flex; gap: 12px; align-items: baseline; color: #dce3ee; padding: 11px 12px; border-radius: 8px; font-size: 13px; text-decoration: none; border: 1px solid transparent; }
+    .dock nav a span { color: #8c9db7; font: 10px var(--mono); }
+    .dock nav a:hover, .dock nav a[aria-current="location"] { background: #1c2940; color: white; border-color: #34435c; }
+    .dock nav a[aria-current="location"] span { color: #ffa2a9; }
+    .dock-foot { margin-top: auto; padding: 38px 12px 0; font-size: 11px; color: #afbdd2; line-height: 1.7; }
+    .dock-foot a { color: #dce3ee; }
+    .offline-dot { display: inline-block; width: 6px; height: 6px; background: #90c5a6; border-radius: 50%; margin-right: 6px; }
+    main { margin-left: var(--dock); padding: 62px clamp(24px, 4vw, 70px) 0; }
+    .content { max-width: 1120px; margin: 0 auto; }
+    .eyebrow { color: var(--coral); font-size: 11px; font-weight: 750; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 19px; }
+    .intro { font-size: 19px; line-height: 1.65; color: var(--muted); max-width: 790px; margin-top: 24px; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+    .pill { border: 1px solid var(--line); border-radius: 30px; padding: 5px 11px; font-size: 11px; font-weight: 650; color: #45536a; background: white; }
+    .hero-note { margin: 26px 0 0; font-size: 12px; color: var(--muted); }
+    section { margin-top: 84px; scroll-margin-top: 28px; }
+    .section-no { display: block; color: var(--coral); font: 11px var(--mono); letter-spacing: .08em; margin-bottom: 12px; }
+    .lead { max-width: 870px; color: var(--muted); font-size: 17px; }
+    .grid { display: grid; gap: 16px; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 25px; }
+    .card p:last-child { margin-bottom: 0; }
+    .card p { font-size: 14px; color: var(--muted); }
+    .card-index { display: inline-grid; place-items: center; width: 30px; height: 30px; background: var(--blue-soft); color: var(--blue); border-radius: 9px; font: 12px var(--mono); margin-bottom: 20px; }
+    .equation { display: flex; justify-content: space-between; align-items: center; gap: 20px; border: 1px solid #bdd8c8; background: var(--green-soft); border-radius: 14px; padding: 22px 24px; margin-top: 18px; }
+    .equation strong { color: var(--green); font: 600 clamp(12px, 1.6vw, 18px) var(--mono); }
+    .equation span { font-size: 12px; color: var(--green); max-width: 270px; }
+    figure { margin: 28px 0; }
+    .diagram { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; overflow-x: auto; }
+    .diagram svg { width: 100%; height: auto; min-width: 640px; display: block; font-family: var(--sans); }
+    .diagram svg text { fill: var(--heading); }
+    .diagram svg .caption { fill: var(--muted); font-size: 12px; }
+    .diagram svg .label { font-size: 14px; font-weight: 700; }
+    .diagram svg .small { font-size: 11px; }
+    .diagram svg .edge { fill: none; stroke: #77859a; stroke-width: 1.6; }
+    .diagram svg .dashed { stroke-dasharray: 5 5; }
+    .diagram svg .navy-label { fill: white; }
+    .diagram svg .code { font-family: var(--mono); font-size: 11px; }
+    figcaption { font-size: 12px; color: var(--muted); margin-top: 11px; padding: 0 4px; line-height: 1.65; }
+    figcaption strong { color: #38475e; }
+    .sources { font-size: 12px; color: var(--muted); margin: 20px 0 0; line-height: 1.9; }
+    .sources a { white-space: normal; }
+    .role { display: inline-block; font: 11px var(--mono); color: var(--purple); background: var(--purple-soft); padding: 4px 7px; border-radius: 5px; margin-bottom: 12px; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); margin-top: 24px; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    th, td { padding: 17px 20px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { background: #eef2f7; color: #35445b; font-size: 11px; letter-spacing: .035em; }
+    tbody tr:last-child td { border-bottom: 0; }
+    td:first-child { font-weight: 650; }
+    .control-row { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: 14px; margin: 27px 0 0; }
+    .control-label { font-size: 12px; font-weight: 650; color: var(--muted); }
+    .segmented { display: inline-flex; padding: 4px; gap: 4px; border: 1px solid #cbd3df; border-radius: 11px; background: #eef2f7; }
+    .segmented button { cursor: pointer; border: 1px solid transparent; color: #435169; border-radius: 7px; padding: 8px 16px; font-size: 12px; font-weight: 700; background: transparent; }
+    .segmented button[aria-pressed="true"], .segmented button[aria-selected="true"] { background: var(--navy); color: white; box-shadow: 0 2px 5px #0f172718; }
+    .segmented button:hover { border-color: #8b9ab1; }
+    .channel-info { border-left: 3px solid var(--blue); background: var(--blue-soft); padding: 16px 20px; border-radius: 0 12px 12px 0; margin-top: 18px; min-height: 92px; font-size: 14px; }
+    .channel-info strong { display: block; color: var(--blue); margin-bottom: 4px; }
+    .channel-info p { margin: 0; color: #354e70; }
+    .steps { list-style: none; counter-reset: steps; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 22px 0; }
+    .steps li { counter-increment: steps; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 16px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+    .steps li::before { content: "0" counter(steps); display: block; color: var(--blue); font: 11px var(--mono); margin-bottom: 9px; }
+    .steps strong { display: block; color: var(--heading); font-size: 13px; margin-bottom: 4px; }
+    .steps .commit { background: var(--green-soft); border-color: #bdd8c8; }
+    .steps .commit::before { color: var(--green); }
+    .callout { padding: 22px 24px; border-radius: 13px; border: 1px solid #e7c9ad; background: var(--amber-soft); margin: 24px 0; color: #74421f; font-size: 14px; }
+    .callout strong { display: block; margin-bottom: 7px; color: #74421f; }
+    .callout p { margin: 0; }
+    .callout code { background: #fff8f0; border-color: #e7c9ad; }
+    .state-list { display: grid; gap: 10px; margin-top: 20px; }
+    .state { display: grid; grid-template-columns: 175px 1fr; gap: 18px; align-items: baseline; padding: 15px 18px; background: white; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--muted); }
+    .state strong { font: 600 11px var(--mono); color: var(--heading); }
+    .state.pending { border-left: 4px solid var(--amber); }
+    .state.done { border-left: 4px solid var(--green); }
+    .state.rejected { border-left: 4px solid var(--coral); }
+    details { background: white; border: 1px solid var(--line); border-radius: 13px; margin-top: 12px; }
+    summary { cursor: pointer; padding: 18px 22px; font-size: 14px; font-weight: 700; color: var(--heading); }
+    details[open] summary { border-bottom: 1px solid var(--line); }
+    .detail-content { padding: 20px 22px; font-size: 14px; color: var(--muted); }
+    .detail-content p:last-child { margin-bottom: 0; }
+    .tag { display: inline-block; font-size: 10px; font-weight: 750; letter-spacing: .04em; padding: 4px 8px; background: var(--green-soft); color: var(--green); border-radius: 5px; margin-bottom: 14px; }
+    .tag.amber { background: var(--amber-soft); color: var(--amber); }
+    .topology-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin: 22px 0 14px; }
+    .topology-head h3 { margin: 0; }
+    .topology-meta { font: 10px var(--mono); color: var(--muted); }
+    .topology-panel .diagram { margin-top: 12px; }
+    .fine { font-size: 12px; color: var(--muted); }
+    .decision { border-top: 3px solid #536e97; }
+    .decision .tradeoff { padding-top: 14px; border-top: 1px solid var(--line); margin-top: 16px; font-size: 12px; }
+    .read-more { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
+    .read-more a { display: block; text-decoration: none; padding: 20px; background: var(--navy); border-radius: 12px; color: white; font-size: 13px; }
+    .read-more a span { display: block; color: #b8c5d9; font-size: 11px; margin-top: 6px; }
+    .read-more a:hover { background: #21334e; }
+    footer { border-top: 1px solid var(--line); margin-top: 72px; padding: 24px 0 40px; color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; gap: 24px; }
+    [hidden] { display: none !important; }
+    @media (min-width: 1700px) { :root { --dock: 280px; } main { padding-top: 78px; } }
+    @media (max-width: 1100px) { :root { --dock: 210px; } .dock { padding: 28px 12px; } main { padding: 44px 26px 0; } .grid.three { gap: 12px; } .card { padding: 20px; } .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 850px) {
+      .dock { position: relative; width: 100%; padding: 18px 22px; overflow: visible; }
+      .brand { margin: 0 0 16px; } .brand strong { font-size: 12px; } .brand-mark { width: 32px; height: 32px; }
+      .nav-label, .dock-foot { display: none; } .dock nav { display: flex; overflow-x: auto; gap: 3px; padding-bottom: 2px; }
+      .dock nav a { flex: 0 0 auto; padding: 8px 10px; font-size: 11px; } .dock nav a span { display: none; }
+      main { margin: 0; padding: 38px 22px 0; } section { margin-top: 62px; }
+      .intro { font-size: 17px; } .grid.three { grid-template-columns: 1fr; } .grid.two { gap: 12px; }
+      .card-index { margin-bottom: 13px; } .equation { align-items: flex-start; flex-direction: column; gap: 10px; } .equation span { max-width: none; }
+      .diagram { padding: 12px; } .read-more { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) { .grid.two { grid-template-columns: 1fr; } .card { padding: 21px; } .state { grid-template-columns: 1fr; gap: 5px; } .steps li { padding: 13px; } .control-row { align-items: flex-start; flex-direction: column; } .topology-head { align-items: flex-start; flex-direction: column; gap: 5px; } footer { flex-direction: column; gap: 8px; } }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media screen and (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101c23; --paper: #172730; --ink: #e5eff3; --muted: #a5bac6; --line: #314b59;
+        --heading: var(--ink); --link: #68cbd1;
+        --blue: #91c7ff; --blue-soft: #1a3345; --green: #91d4ae; --green-soft: #19382f;
+        --amber: #f0bd87; --amber-soft: #3b2e20; --purple: #c7b3ed; --purple-soft: #302944;
+        --coral: #f3a1ab; --coral-soft: #442730;
+      }
+      :focus-visible { outline-color: #f0bd87; }
+      code { background: var(--bg); border-color: var(--line); }
+      .dock { background: var(--bg); color: var(--ink); border-right: 1px solid var(--line); }
+      .brand, .dock nav a, .dock-foot a { color: var(--ink); }
+      .brand-mark { border-color: var(--line); color: var(--link); }
+      .brand span:last-child, .nav-label, .dock nav a span, .dock-foot { color: var(--muted); }
+      .dock nav a:hover, .dock nav a[aria-current="location"] { background: var(--paper); color: var(--ink); border-color: var(--line); }
+      .dock nav a[aria-current="location"] span { color: var(--link); }
+      .offline-dot { background: var(--green); }
+      .pill { color: var(--muted); background: var(--paper); }
+      .equation, .steps .commit { border-color: #426e57; }
+      figcaption strong { color: var(--ink); }
+      th { background: #20343f; color: var(--ink); }
+      .segmented { background: var(--bg); border-color: var(--line); }
+      .segmented button { color: var(--muted); }
+      .segmented button[aria-pressed="true"], .segmented button[aria-selected="true"] { background: #25454e; color: var(--ink); border-color: #68cbd1; box-shadow: none; }
+      .segmented button:hover { border-color: var(--link); }
+      .channel-info p { color: #c0d9ef; }
+      .callout { border-color: #85623f; color: #e6c09c; }
+      .callout strong { color: var(--amber); }
+      .callout code { background: #30261c; border-color: #85623f; }
+      .state, details { background: var(--paper); }
+      .decision { border-top-color: #679bb9; }
+      .read-more a { background: #1c3542; color: var(--ink); }
+      .read-more a span { color: var(--muted); }
+      .read-more a:hover { background: #264553; }
+      .diagram svg .edge { stroke: #8ba8b9; }
+      .diagram svg .navy-label { fill: var(--ink); }
+      .diagram svg [fill="#77859a"] { fill: #8ba8b9; }
+      .diagram svg [fill="#f7f9fc"], .diagram svg [fill="#f8fafc"] { fill: var(--bg); }
+      .diagram svg [fill="#fff"] { fill: var(--paper); }
+      .diagram svg [fill="#eef2f7"] { fill: #20343f; }
+      .diagram svg [fill="#e7f1fc"] { fill: var(--blue-soft); }
+      .diagram svg [fill="#f0ebf8"] { fill: var(--purple-soft); }
+      .diagram svg [fill="#0f1727"] { fill: #243f4f; }
+      .diagram svg [fill="#e7f3ec"] { fill: var(--green-soft); }
+      .diagram svg [fill="#fff1e3"] { fill: var(--amber-soft); }
+      .diagram svg [fill="#f3f8f5"] { fill: #132c26; }
+      .diagram svg [fill="#236442"] { fill: #245b41; }
+      .diagram svg [stroke="#dce1e7"], .diagram svg [stroke="#cbd3df"], .diagram svg [stroke="#b8c8de"] { stroke: var(--line); }
+      .diagram svg [stroke="#9bbfe6"] { stroke: #456b87; }
+      .diagram svg [stroke="#bfaddc"] { stroke: #6a5a87; }
+      .diagram svg [stroke="#9cc9af"] { stroke: #426e57; }
+      .diagram svg [stroke="#e1ba93"] { stroke: #85623f; }
+      .diagram svg [stroke="#b9c7be"] { stroke: #52695d; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      .dock, .skip, .segmented { display: none !important; } main { margin: 0; padding: 0; } body { font-size: 11px; background: white; }
+      section { margin-top: 30px; break-inside: avoid-page; } h1 { font-size: 34px; } h2 { font-size: 25px; }
+      .topology-panel[hidden] { display: block !important; } .diagram { overflow: visible; } .diagram svg { min-width: 0; }
+      .card, details, .diagram, .table-wrap { break-inside: avoid; } a { color: inherit; } .intro { font-size: 14px; } footer { margin-top: 30px; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#conteudo">Ir para o conteúdo</a>
+  <aside class="dock" aria-label="Navegação da arquitetura">
+    <a class="brand" href="#visao-geral" aria-label="Jungle Wagering: início da arquitetura">
+      <span class="brand-mark" aria-hidden="true">J</span>
+      <span><strong>JUNGLE WAGERING</strong><span>Mapa da arquitetura</span></span>
+    </a>
+    <p class="nav-label">Sistema implementado</p>
+    <nav aria-label="Seções">
+      <a href="#visao-geral" aria-current="location"><span>01</span> Visão geral</a>
+      <a href="#modulos"><span>02</span> Módulos e roles</a>
+      <a href="#transacao"><span>03</span> Fluxo financeiro</a>
+      <a href="#identidade"><span>04</span> Identidade e estados</a>
+      <a href="#outbox"><span>05</span> Eventos e outbox</a>
+      <a href="#recuperacao"><span>06</span> Recuperação</a>
+      <a href="#execucao"><span>07</span> Onde executa</a>
+      <a href="#decisoes"><span>08</span> Decisões e limites</a>
+    </nav>
+    <div class="dock-foot">
+      <span class="offline-dot" aria-hidden="true"></span>Documento offline<br>
+      Diagramas e interações locais.<br>
+      <a href="../ARCHITECTURE.md">Arquitetura completa ↗</a>
+    </div>
+  </aside>
+
+  <main id="conteudo" tabindex="-1">
+    <div class="content">
+      <header id="visao-geral">
+        <div class="eyebrow">01 / Distributed Wagering Processor</div>
+        <h1>Duas entradas.<br>Uma decisão financeira.</h1>
+        <p class="intro">HTTP e SQS chegam ao mesmo caso de uso. O PostgreSQL confirma o resultado, protege a carteira e guarda sua história. O broker transporta comandos e eventos; a consistência financeira fica no banco.</p>
+        <div class="pills" aria-label="Tecnologias da implementação">
+          <span class="pill">Bun 1.4.3</span><span class="pill">TypeScript · NestJS</span><span class="pill">PostgreSQL · MikroORM</span><span class="pill">SQS FIFO · MiniStack local</span>
+        </div>
+        <p class="hero-note">Mapa de leitura do código existente. Os contratos completos e suas fontes estão em <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>; o setup fica no <a href="../README.md">README</a>.</p>
+      </header>
+
+      <div class="grid three" style="margin-top:36px">
+        <article class="card">
+          <span class="card-index" aria-hidden="true">01</span><h3>Identidade persistente</h3>
+          <p>Chaves do provedor e inbox SQL reconhecem a mesma operação entre instâncias, retries e reinícios. Um replay compatível devolve o resultado guardado.</p>
+        </article>
+        <article class="card">
+          <span class="card-index" aria-hidden="true">02</span><h3>Lock por carteira</h3>
+          <p><code>SELECT … FOR UPDATE</code> serializa decisões sobre a mesma wallet. Carteiras diferentes podem avançar em paralelo.</p>
+        </article>
+        <article class="card">
+          <span class="card-index" aria-hidden="true">03</span><h3>Uma confirmação SQL</h3>
+          <p>Inbox, resultado, saldo, ledger e outbox da decisão confirmam juntos. ACK e envio de eventos acontecem depois do commit.</p>
+        </article>
+      </div>
+      <div class="equation" aria-label="Invariante financeira: saldo da carteira igual à soma de créditos menos débitos do ledger">
+        <strong>wallet.balance = Σ créditos − Σ débitos</strong>
+        <span>Inclui a abertura com saldo positivo. Reconciliação verifica a igualdade sem alterar a história.</span>
+      </div>
+
+      <section id="modulos" aria-labelledby="modulos-title">
+        <span class="section-no">02 / COMPOSIÇÃO</span><h2 id="modulos-title">Um monólito modular, três roles.</h2>
+        <p class="lead">Uma imagem de aplicação compartilha domínio, casos de uso e adapters. <code>APP_ROLE</code> define quais entradas e loops trabalham em cada processo.</p>
+        <figure>
+          <div class="diagram" tabindex="0" role="region" aria-label="Diagrama de módulos; rolagem horizontal disponível em telas pequenas">
+            <svg viewBox="0 0 880 450" role="img" aria-labelledby="modules-title modules-desc">
+              <title id="modules-title">Módulos e caminhos de entrada</title>
+              <desc id="modules-desc">HTTP passa por identity e SQS pelo consumer de messaging. Ambos chamam wagering e suas portas, que persistem no PostgreSQL. Workers publicam eventos e resolvem referências. Observability acompanha os três papéis.</desc>
+              <defs><marker id="modules-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#77859a"/></marker></defs>
+              <rect x="280" y="24" width="352" height="340" rx="20" fill="#f7f9fc" stroke="#dce1e7"/>
+              <text x="304" y="51" class="caption">Aplicação compartilhada</text>
+              <rect x="24" y="76" width="177" height="72" rx="12" fill="#e7f1fc" stroke="#9bbfe6"/>
+              <text x="44" y="103" class="label">HTTP · role api</text><text x="44" y="126" class="small">Provedor → adapter HTTP</text>
+              <rect x="24" y="194" width="177" height="72" rx="12" fill="#f0ebf8" stroke="#bfaddc"/>
+              <text x="44" y="221" class="label">SQS · role consumer</text><text x="44" y="244" class="small">requests.fifo → polling</text>
+              <rect x="305" y="76" width="302" height="65" rx="11" fill="#e7f1fc" stroke="#9bbfe6"/>
+              <text x="324" y="102" class="label">identity</text><text x="324" y="123" class="small">JWT/JWKS · provedor · escopos HTTP</text>
+              <rect x="305" y="187" width="302" height="81" rx="11" fill="#0f1727"/>
+              <text x="324" y="215" class="label navy-label">wagering · mesmo caso de uso</text><text x="324" y="238" class="small navy-label">Domínio financeiro · carteira · ledger</text><text x="324" y="255" class="small navy-label">Portas de persistência e UnitOfWork</text>
+              <rect x="305" y="301" width="302" height="42" rx="9" fill="#fff" stroke="#dce1e7"/>
+              <text x="324" y="327" class="small">shared · Money · eventos · contratos SQL</text>
+              <path d="M201 112H305" class="edge" marker-end="url(#modules-arrow)"/>
+              <path d="M456 141V187" class="edge" marker-end="url(#modules-arrow)"/>
+              <path d="M201 230H305" class="edge" marker-end="url(#modules-arrow)"/>
+              <path d="M456 301V268" class="edge dashed" marker-end="url(#modules-arrow)"/>
+              <rect x="686" y="187" width="170" height="81" rx="12" fill="#e7f3ec" stroke="#9cc9af"/>
+              <text x="710" y="219" class="label">PostgreSQL</text><text x="710" y="243" class="small">Garantias persistentes</text>
+              <path d="M607 228H686" class="edge" marker-end="url(#modules-arrow)"/>
+              <rect x="24" y="301" width="177" height="63" rx="12" fill="#fff1e3" stroke="#e1ba93"/>
+              <text x="44" y="327" class="label">role worker</text><text x="44" y="348" class="small">Outbox + referências</text>
+              <path d="M201 333H250V256H305" class="edge" marker-end="url(#modules-arrow)"/>
+              <path d="M112 364V405H686" class="edge" marker-end="url(#modules-arrow)"/>
+              <text x="277" y="397" class="caption">Publicação após commit</text>
+              <rect x="686" y="378" width="170" height="54" rx="10" fill="#f0ebf8" stroke="#bfaddc"/>
+              <text x="710" y="400" class="label">events.fifo</text><text x="710" y="418" class="small">Eventos de integração</text>
+              <text x="24" y="31" class="caption">observability acompanha API, consumer e workers</text>
+            </svg>
+          </div>
+          <figcaption><strong>Diagrama 1.</strong> Responsabilidades da aplicação. O adapter SQS pertence a <code>messaging</code>; tanto ele quanto o controller HTTP chamam <code>SubmitWagerTransaction</code>. As filas aparecem com nomes abreviados.</figcaption>
+        </figure>
+        <div class="grid three">
+          <article class="card"><span class="role">APP_ROLE=api</span><h3>Entrada HTTP</h3><p>Autentica JWT e escopos, deriva o provedor autorizado e delega o comando. Também oferece consultas e reconciliação.</p></article>
+          <article class="card"><span class="role">APP_ROLE=consumer</span><h3>Entrada assíncrona</h3><p>Recebe comandos SQS, valida o envelope e fornece a identidade do inbox ao mesmo caso de uso. Controla retry, DLQ e ACK.</p></article>
+          <article class="card"><span class="role">APP_ROLE=worker</span><h3>Trabalho recuperável</h3><p>Publica eventos confirmados no outbox e revisita referências pendentes. A seleção SQL permite múltiplos workers.</p></article>
+        </div>
+        <p class="sources">Fontes: <a href="../src/app.module.ts">composição NestJS</a> · <a href="../src/wagering/wagering.module.ts">wagering</a> · <a href="../src/messaging/messaging-runtime.module.ts">runtime de messaging</a> · <a href="../src/identity/identity.module.ts">identity</a>.</p>
+      </section>
+
+      <section id="transacao" aria-labelledby="transacao-title">
+        <span class="section-no">03 / CAMINHO CRÍTICO</span><h2 id="transacao-title">O commit define o que aconteceu.</h2>
+        <p class="lead">Cada execução usa um EntityManager isolado, <code>READ COMMITTED</code> e <code>lock_timeout = 2s</code>. O resultado da UnitOfWork só resolve depois da confirmação do banco.</p>
+        <div class="control-row">
+          <span class="control-label" id="channel-label">Explore a entrada do mesmo caso de uso</span>
+          <div class="segmented" role="group" aria-labelledby="channel-label">
+            <button type="button" data-channel="http" aria-pressed="true" aria-controls="channel-info">HTTP</button>
+            <button type="button" data-channel="sqs" aria-pressed="false" aria-controls="channel-info">SQS</button>
+          </div>
+        </div>
+        <div class="channel-info" id="channel-info" aria-live="polite" aria-atomic="true">
+          <strong id="channel-title">HTTP → SubmitWagerTransaction</strong>
+          <p id="channel-description">JWT e escopos autorizam o provedor. O comando leva Idempotency-Key; o resultado ou conflito só volta ao adapter depois de concluir a transação SQL.</p>
+        </div>
+        <ol class="steps" aria-label="Etapas da submissão financeira">
+          <li><strong>Validar o comando</strong>Hash canônico dos campos de negócio e construção de <code>Money</code> antes do SQL.</li>
+          <li><strong>BEGIN e inbox</strong><span id="inbox-description">HTTP não cria inbox. Na entrada SQS, o claim persistente abre a mesma unidade de trabalho.</span></li>
+          <li><strong>Bloquear a wallet</strong><code>FOR UPDATE</code> protege a decisão concorrente sobre o saldo corrente.</li>
+          <li><strong>Reconhecer a identidade</strong>Chave e external ID do provedor. Replay não liquida a operação novamente.</li>
+          <li><strong>Avaliar o domínio</strong>Saldo, moeda, referência e reversão. Registrar o resultado decidido.</li>
+          <li><strong>Persistir juntos</strong>Movimento atualiza wallet e ledger; eventos entram no outbox. Concluir inbox se SQS.</li>
+          <li class="commit"><strong>COMMIT</strong>O banco confirma o conjunto. Falha antes disso não deixa um efeito financeiro parcial.</li>
+          <li><strong id="finish-title">Responder ao HTTP</strong><span id="finish-description">Retornar o resultado armazenado e o indicador de replay, ou o conflito de identidade.</span></li>
+        </ol>
+        <figure>
+          <div class="diagram" tabindex="0" role="region" aria-label="Fronteira SQL; rolagem horizontal disponível em telas pequenas">
+            <svg viewBox="0 0 880 302" role="img" aria-labelledby="atomic-title atomic-desc">
+              <title id="atomic-title">Fronteira atômica da transação financeira</title>
+              <desc id="atomic-desc">Inbox opcional do SQS, registro da transação, saldo da wallet, ledger e outbox estão na mesma transação PostgreSQL. Commit precede tanto ACK quanto publicação de eventos.</desc>
+              <defs><marker id="atomic-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#77859a"/></marker></defs>
+              <rect x="20" y="20" width="620" height="254" rx="18" fill="#f3f8f5" stroke="#9cc9af"/>
+              <text x="43" y="50" class="label">Uma transação PostgreSQL</text><text x="43" y="72" class="caption">BEGIN → lock por wallet → decisão → persistência → COMMIT</text>
+              <rect x="43" y="94" width="171" height="58" rx="10" fill="#fff" stroke="#b9c7be"/>
+              <text x="59" y="118" class="label">inbox_messages</text><text x="59" y="137" class="small">Somente entrada SQS</text>
+              <rect x="234" y="94" width="177" height="58" rx="10" fill="#fff" stroke="#b9c7be"/>
+              <text x="249" y="118" class="label">wager_transactions</text><text x="249" y="137" class="small">Identidade + resultado</text>
+              <rect x="431" y="94" width="186" height="58" rx="10" fill="#fff" stroke="#b9c7be"/>
+              <text x="448" y="118" class="label">outbox_messages</text><text x="448" y="137" class="small">Eventos ainda não enviados</text>
+              <rect x="43" y="171" width="268" height="72" rx="10" fill="#e7f1fc" stroke="#9bbfe6"/>
+              <text x="59" y="197" class="label">wallets</text><text x="59" y="219" class="small">Saldo + versão · linha protegida por lock</text>
+              <rect x="331" y="171" width="286" height="72" rx="10" fill="#e7f1fc" stroke="#9bbfe6"/>
+              <text x="348" y="197" class="label">wallet_ledger_entries</text><text x="348" y="219" class="small">História append-only de cada movimento</text>
+              <path d="M640 144H689" class="edge" marker-end="url(#atomic-arrow)"/>
+              <rect x="690" y="115" width="166" height="58" rx="11" fill="#236442"/>
+              <text x="727" y="149" class="label navy-label">COMMIT</text>
+              <text x="696" y="202" class="caption">Depois da confirmação:</text>
+              <text x="696" y="225" class="small">Resposta ou ACK</text><text x="696" y="246" class="small">Publisher pode enviar eventos</text>
+            </svg>
+          </div>
+          <figcaption><strong>Diagrama 2.</strong> A fronteira atômica inclui todos os registros da decisão. Wallet e ledger mudam quando existe movimento financeiro; <code>LOSS</code> é informativo e não altera saldo.</figcaption>
+        </figure>
+        <div class="callout"><strong>FIFO não é o mecanismo de exclusão financeira.</strong><p>HTTP, redelivery e múltiplas instâncias convergem para o mesmo lock e as mesmas constraints. As garantias de identidade e saldo sobrevivem ao fim da janela de deduplicação do SQS.</p></div>
+        <p class="sources">Fontes: <a href="../src/wagering/application/submit-wager-transaction.ts">submissão compartilhada</a> · <a href="../src/shared/infrastructure/unit-of-work.ts">UnitOfWork</a> · <a href="../src/wagering/infrastructure/repositories.ts">locks e repositórios</a> · <a href="../src/wagering/application/settlement-writer.ts">liquidação e escrita</a>.</p>
+      </section>
+
+      <section id="identidade" aria-labelledby="identidade-title">
+        <span class="section-no">04 / HISTÓRIA PERSISTENTE</span><h2 id="identidade-title">Repetir a entrega não repete o efeito.</h2>
+        <p class="lead">Três identidades cobrem a operação do provedor e a entrega do consumidor. Elas têm escopos diferentes e são protegidas no schema.</p>
+        <div class="table-wrap">
+          <table>
+            <caption class="fine" style="text-align:left;padding:16px 20px">Identidades usadas para deduplicação persistente</caption>
+            <thead><tr><th scope="col">Identidade SQL</th><th scope="col">O que reconhece</th><th scope="col">Resultado da repetição</th></tr></thead>
+            <tbody>
+              <tr><td><code>provider_id + idempotency_key</code></td><td>A mesma tentativa lógica do provedor.</td><td>Mesmo hash: resultado armazenado. Outro hash: <code>IDEMPOTENCY_CONFLICT</code>.</td></tr>
+              <tr><td><code>provider_id + external_transaction_id</code></td><td>A mesma transação externa, mesmo com outra chave.</td><td>Nova chave usando o external ID: <code>EXTERNAL_TRANSACTION_CONFLICT</code>.</td></tr>
+              <tr><td><code>consumer_name + message_id</code></td><td>A mesma mensagem lógica entregue por SQS.</td><td>Conteúdo compatível: sem novo efeito. Outro conteúdo: <code>INBOX_PAYLOAD_CONFLICT</code> e DLQ.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="fine" style="margin-top:15px">O hash de negócio exclui chave idempotente e metadados de transporte. O hash do inbox usa <code>envelope.data</code>, incluindo a chave. O saldo retornado em replay é o snapshot do resultado, não uma nova leitura do saldo atual.</p>
+        <div class="grid two" style="margin-top:28px">
+          <article class="card">
+            <h3>Estados persistidos</h3><p><code>PENDING</code> existe na criação em memória. A primeira decisão persiste um dos estados abaixo.</p>
+            <div class="state-list">
+              <div class="state pending"><strong>PENDING_REFERENCE</strong><span>Falta uma referência resolvida. O worker pode avançar a decisão.</span></div>
+              <div class="state done"><strong>PROCESSED</strong><span>Operação aceita. Pode haver movimento; <code>LOSS</code> é a exceção informativa.</span></div>
+              <div class="state rejected"><strong>REJECTED</strong><span>Regra de negócio rejeitou a operação.</span></div>
+              <div class="state rejected"><strong>FAILED</strong><span>Falha SQL permanente registrada em nova UOW após rollback.</span></div>
+            </div>
+            <p class="fine" style="margin-top:16px">PROCESSED, REJECTED e FAILED são terminais. Replays consultam o registro; não reabrem sua decisão.</p>
+          </article>
+          <article class="card">
+            <h3>Reverter cria outra história</h3>
+            <p><code>BET</code> debita. <code>WIN</code> credita. <code>REFUND</code> devolve integralmente um BET. <code>ROLLBACK</code> aplica o inverso de BET, WIN ou REFUND e respeita o saldo disponível.</p>
+            <p>A referência ausente ou ainda pendente gera <code>PENDING_REFERENCE</code>, com TTL padrão de 24 horas. O prazo limita a espera; uma referência válida já processada ainda pode ser aplicada na leitura final.</p>
+            <p>Um índice único parcial permite só uma reversão direta processada por alvo, somando REFUND e ROLLBACK. A compensação grava uma nova transação e um novo lançamento.</p>
+            <div class="tag" style="margin:8px 0 0">Ledger imutável no banco</div>
+          </article>
+        </div>
+        <details>
+          <summary>Como o schema fecha as corridas e protege a auditoria?</summary>
+          <div class="detail-content"><p>Constraints impõem saldo não negativo, identidades únicas, um lançamento por transação/wallet e uma versão de ledger por wallet. FKs compostas garantem que lançamento, carteira, moeda e transação correspondam. Checks validam a aritmética de cada lançamento.</p><p>Triggers recusam UPDATE, DELETE e TRUNCATE do ledger e alterações de transações terminais. A igualdade agregada entre saldo e ledger é verificada por reconciliação e testes; não há uma CHECK entre todas as linhas que imponha sozinha essa soma.</p><p><code>wager_transactions.wallet_id</code> não tem FK para permitir uma rejeição auditável de wallet desconhecida. O ledger conserva suas FKs e não aceita esse movimento.</p></div>
+        </details>
+        <p class="sources">Fontes: <a href="../database/migrations/Migration202610310001.ts">constraints e triggers</a> · <a href="../src/shared/application/canonical-json.ts">hash canônico</a> · <a href="../src/wagering/domain/wager-transaction.ts">estados e referências</a> · <a href="../src/wagering/infrastructure/reconciliation.ts">reconciliação SQL</a>.</p>
+      </section>
+
+      <section id="outbox" aria-labelledby="outbox-title">
+        <span class="section-no">05 / PUBLICAÇÃO</span><h2 id="outbox-title">Primeiro confirmar. Depois enviar.</h2>
+        <p class="lead">O outbox transforma a intenção de publicar em trabalho persistido. Uma indisponibilidade do broker pode atrasar o evento sem desfazer uma transação financeira já confirmada.</p>
+        <figure>
+          <div class="diagram" tabindex="0" role="region" aria-label="Ciclo do outbox; rolagem horizontal disponível em telas pequenas">
+            <svg viewBox="0 0 880 266" role="img" aria-labelledby="outbox-svg-title outbox-svg-desc">
+              <title id="outbox-svg-title">Ciclo de publicação do outbox</title>
+              <desc id="outbox-svg-desc">Depois do commit financeiro, o worker reclama até dez eventos em uma transação SQL e agenda retry. Envia o batch para SQS fora do SQL. Outra transação marca os sucessos como publicados. Crash antes da marcação pode produzir reenvio do mesmo eventId.</desc>
+              <defs><marker id="outbox-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#77859a"/></marker></defs>
+              <rect x="20" y="48" width="164" height="96" rx="12" fill="#e7f3ec" stroke="#9cc9af"/>
+              <text x="38" y="79" class="label">Commit financeiro</text><text x="38" y="103" class="small">Outbox já persistido</text><text x="38" y="122" class="small">junto ao resultado</text>
+              <rect x="241" y="48" width="175" height="96" rx="12" fill="#e7f1fc" stroke="#9bbfe6"/>
+              <text x="259" y="79" class="label">1 · Claim SQL</text><text x="259" y="103" class="small">SKIP LOCKED · até 10</text><text x="259" y="122" class="small">Agendar retry + commit</text>
+              <rect x="473" y="48" width="175" height="96" rx="12" fill="#f0ebf8" stroke="#bfaddc"/>
+              <text x="491" y="79" class="label">2 · SendMessageBatch</text><text x="491" y="103" class="small">SQS fora da UOW</text><text x="491" y="122" class="small">eventId preservado</text>
+              <rect x="705" y="48" width="155" height="96" rx="12" fill="#e7f1fc" stroke="#9bbfe6"/>
+              <text x="722" y="79" class="label">3 · Confirmar SQL</text><text x="722" y="103" class="small">Marcar apenas os</text><text x="722" y="122" class="small">IDs enviados com sucesso</text>
+              <path d="M184 96H241M416 96H473M648 96H705" class="edge" marker-end="url(#outbox-arrow)"/>
+              <path d="M783 144V199H329V144" class="edge dashed" marker-end="url(#outbox-arrow)"/>
+              <text x="351" y="190" class="caption">Sem marca de publicação, volta a ficar devido.</text>
+              <rect x="20" y="219" width="840" height="30" rx="8" fill="#fff1e3"/>
+              <text x="38" y="239" class="small">Send confirmado + crash antes da marcação → o mesmo evento pode ser enviado outra vez.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Diagrama 3.</strong> A publicação é recuperável e pode duplicar eventos. O claim é temporal; não há transação distribuída entre PostgreSQL e SQS nem token persistente de propriedade do lote.</figcaption>
+        </figure>
+        <div class="grid two">
+          <article class="card"><span class="tag">Contrato de entrega</span><h3>Deduplicar pelo eventId</h3><p>O publisher usa <code>eventId</code> como <code>MessageDeduplicationId</code>. Um consumidor de integração ainda precisa reconhecer esse ID de forma persistente: a janela do FIFO não elimina todas as repetições.</p><p>Um movimento gera o evento de status da transação e <code>WalletBalanceChanged</code>. Uma decisão sem movimento não cria um lançamento fictício nem um evento de saldo.</p></article>
+          <article class="card"><span class="tag amber">Limite de ordenação</span><h3>Grupos diferentes, histórias diferentes</h3><p>Eventos de status usam a transação como <code>aggregateId</code>; eventos de saldo usam a wallet. O transporte usa o agregado como <code>MessageGroupId</code>.</p><p>Não há ordem entre esses grupos. Publicação concorrente também pode entregar versões da mesma wallet fora da ordem financeira; <code>walletVersion</code> permite reconhecer essa situação.</p></article>
+        </div>
+        <p class="fine" style="margin-top:20px">A implementação publica em uma fila de eventos. Consumidores independentes nessa mesma fila disputariam mensagens; fan-out com SNS e filas próprias não faz parte do sistema atual.</p>
+        <p class="sources">Fontes: <a href="../src/messaging/application/outbox-publisher.ts">publisher</a> · <a href="../src/messaging/infrastructure/repositories.ts">claim e confirmação SQL</a> · <a href="../src/messaging/infrastructure/sqs-transport.ts">adapter SQS</a> · <a href="../src/wagering/domain/events.ts">eventos de domínio</a>.</p>
+      </section>
+
+      <section id="recuperacao" aria-labelledby="recuperacao-title">
+        <span class="section-no">06 / FALHAS ALCANÇÁVEIS</span><h2 id="recuperacao-title">Cada janela de falha tem um caminho de volta.</h2>
+        <p class="lead">SQL, broker e processo podem parar em instantes distintos. A recuperação combina rollback, identidade persistente, redelivery e trabalho devido no banco.</p>
+        <div class="grid two">
+          <article class="card"><span class="tag amber">Antes do commit</span><h3>Crash ou erro transitório SQL</h3><p>A UOW faz rollback. O comando SQS permanece disponível para nova entrega; uma tentativa HTTP precisa reutilizar sua identidade. Uma corrida conhecida de unicidade recebe uma nova tentativa de leitura/decisão.</p><p>Após falha transitória de banco, o consumer pausa novos receives e testa <code>SELECT 1</code> com backoff de 250 ms até 5 s. Ele retoma quando o banco responde.</p></article>
+          <article class="card"><span class="tag">Depois do commit, antes do ACK</span><h3>Entrega novamente, reconhece novamente</h3><p>O broker pode reenviar o comando. Inbox e identidades da transação impedem um segundo débito ou crédito. O consumer confirma o resultado persistido antes de remover a mensagem.</p><p>Se o envio à DLQ ou o próprio ACK falhar, a redelivery permite concluir esse encaminhamento sem repetir a liquidação.</p></article>
+          <article class="card"><span class="tag amber">Referência fora de ordem</span><h3>Persistir a espera, depois resolver</h3><p><code>PENDING_REFERENCE</code> pode receber ACK porque a espera ficou no banco. O worker escolhe primeiro uma wallet devida com <code>FOR UPDATE … SKIP LOCKED</code>, depois uma pendência dessa wallet.</p><p>Ele preserva a ordem de lock financeiro e revisita o estado até concluir ou confirmar a expiração. Não há promessa de ordem global ou fairness entre trabalhos.</p></article>
+          <article class="card"><span class="tag amber">Falha permanente ou mensagem inválida</span><h3>DLQ antes de remover a origem</h3><p>Resultado <code>FAILED</code>, envelope inválido ou conflito de inbox segue para a DLQ antes do ACK. Rejeição de negócio e conflito normal de identidade encerram o processamento sem uma segunda liquidação.</p><p><code>bun run dlq:redrive</code> reenvia o corpo original com nova identidade de deduplicação do broker e apaga a origem só após sucesso. As identidades de negócio continuam iguais.</p></article>
+        </div>
+        <details><summary>O que um redrive pode e não pode recuperar?</summary><div class="detail-content"><p>Redrive é transporte após corrigir a causa da falha. Ele preserva messageId, chave idempotente e external ID no corpo; não apaga o inbox nem reabre uma transação terminal. Assim, a correção de uma integração não transforma a mesma operação em outra operação financeira.</p><p>No encerramento por SIGTERM, os processos param de iniciar trabalho e tentam drenar o que está em andamento. Esse protocolo reduz repetições, mas a correção continua dependendo do commit e das identidades persistentes.</p></div></details>
+        <p class="sources">Fontes: <a href="../src/messaging/application/wager-consumer.ts">consumer e ACK</a> · <a href="../src/wagering/application/pending-reference-worker.ts">resolver</a> · <a href="../src/cli/dlq-redrive.ts">redrive</a> · <a href="verification.md">cenários de verificação</a>.</p>
+      </section>
+
+      <section id="execucao" aria-labelledby="execucao-title">
+        <span class="section-no">07 / TOPOLOGIAS</span><h2 id="execucao-title">O mesmo núcleo em ambientes diferentes.</h2>
+        <p class="lead">Bun e Docker Compose bastam para a entrega reproduzível. A extensão AWS é um ambiente experimental privado para medição; mantém as mesmas roles e garantias SQL.</p>
+        <div class="control-row">
+          <span class="control-label" id="topology-label">Escolha a topologia para explorar</span>
+          <div class="segmented" role="tablist" aria-labelledby="topology-label">
+            <button type="button" id="tab-local" role="tab" data-topology="local" aria-controls="topology-local" aria-selected="true">Local · Compose</button>
+            <button type="button" id="tab-aws" role="tab" data-topology="aws" aria-controls="topology-aws" aria-selected="false" tabindex="-1">AWS · experimento</button>
+          </div>
+        </div>
+        <figure>
+          <div class="topology-panel" id="topology-local" role="tabpanel" aria-labelledby="tab-local" tabindex="0">
+            <div class="topology-head"><h3>Compose e verificação isolada</h3><span class="topology-meta">wagering / wagering-test</span></div>
+            <div class="diagram" tabindex="0" role="region" aria-label="Topologia local; rolagem horizontal disponível em telas pequenas">
+              <svg viewBox="0 0 880 334" role="img" aria-labelledby="local-svg-title local-svg-desc">
+                <title id="local-svg-title">Topologia local com Docker Compose</title><desc id="local-svg-desc">Cliente e k6 chegam por Nginx às APIs. APIs e consumers compartilham PostgreSQL. MiniStack transporta comandos, eventos e DLQ; workers publicam eventos e resolvem referências. Keycloak fornece JWT de demonstração. A topologia de verificação usa três APIs, três consumers e dois workers.</desc>
+                <defs><marker id="local-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#77859a"/></marker></defs>
+                <rect x="20" y="18" width="840" height="295" rx="18" fill="#f8fafc" stroke="#dce1e7"/>
+                <text x="40" y="44" class="caption">Docker Compose · topologia de testes/carga 3 / 3 / 2</text>
+                <rect x="40" y="73" width="144" height="59" rx="10" fill="#fff" stroke="#cbd3df"/><text x="59" y="98" class="label">Cliente / k6</text><text x="59" y="118" class="small">Carga containerizada</text>
+                <rect x="232" y="73" width="136" height="59" rx="10" fill="#e7f1fc" stroke="#9bbfe6"/><text x="250" y="98" class="label">Nginx</text><text x="250" y="118" class="small">Entrada HTTP</text>
+                <rect x="417" y="73" width="171" height="59" rx="10" fill="#0f1727"/><text x="436" y="98" class="label navy-label">API × 3</text><text x="436" y="118" class="small navy-label">Mesmo caso de uso</text>
+                <path d="M184 103H232M368 103H417" class="edge" marker-end="url(#local-arrow)"/>
+                <rect x="40" y="173" width="144" height="59" rx="10" fill="#fff1e3" stroke="#e1ba93"/><text x="59" y="198" class="label">Keycloak</text><text x="59" y="218" class="small">JWT/JWKS · demo</text>
+                <path d="M184 203H201V149H503V132" class="edge dashed" marker-end="url(#local-arrow)"/>
+                <rect x="232" y="173" width="136" height="59" rx="10" fill="#f0ebf8" stroke="#bfaddc"/><text x="250" y="198" class="label">MiniStack</text><text x="250" y="218" class="small">SQS · 3 filas FIFO</text>
+                <rect x="417" y="173" width="171" height="59" rx="10" fill="#0f1727"/><text x="436" y="198" class="label navy-label">Consumer × 3</text><text x="436" y="218" class="small navy-label">Polling + inbox</text>
+                <path d="M368 203H417" class="edge" marker-end="url(#local-arrow)"/>
+                <rect x="417" y="255" width="171" height="42" rx="10" fill="#fff1e3" stroke="#e1ba93"/><text x="436" y="281" class="label">Worker × 2</text>
+                <path d="M417 276H300V232" class="edge" marker-end="url(#local-arrow)"/>
+                <rect x="674" y="119" width="165" height="80" rx="12" fill="#e7f3ec" stroke="#9cc9af"/><text x="695" y="152" class="label">PostgreSQL 17</text><text x="695" y="176" class="small">Saldo, ledger e filas SQL</text>
+                <path d="M588 103H632V143H674M588 203H632V175H674M588 276H649V190H674" class="edge" marker-end="url(#local-arrow)"/>
+                <text x="675" y="255" class="caption">Perfis opcionais:</text><text x="675" y="275" class="small">observability · load · chaos</text>
+              </svg>
+            </div>
+            <p class="fine" style="margin-top:14px">O projeto isolado <code>wagering-test</code> usa 3 APIs, 3 consumers e 2 workers para integração e cenários superiores. Réplicas do ambiente de desenvolvimento são configuráveis. Prometheus/Grafana, k6 e Toxiproxy entram pelos perfis correspondentes.</p>
+          </div>
+          <div class="topology-panel" id="topology-aws" role="tabpanel" aria-labelledby="tab-aws" tabindex="0">
+            <div class="topology-head"><h3>AWS privada em us-east-2</h3><span class="topology-meta">Terraform · ECS/Fargate · RDS · SQS</span></div>
+            <div class="diagram" tabindex="0" role="region" aria-label="Topologia AWS; rolagem horizontal disponível em telas pequenas">
+              <svg viewBox="0 0 880 360" role="img" aria-labelledby="aws-svg-title aws-svg-desc">
+                <title id="aws-svg-title">Topologia experimental AWS privada</title><desc id="aws-svg-desc">Dentro de uma VPC privada em us-east-2, um runner EC2 via SSM acessa ALB interno e serviços ECS Fargate de API, consumer, worker e Keycloak. Serviços usam RDS PostgreSQL Single-AZ e SQS por endpoints privados. Sem NAT, IP público ou acesso SSH. Duas sub-redes privadas sustentam ALB e subnet group do RDS.</desc>
+                <defs><marker id="aws-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#77859a"/></marker></defs>
+                <rect x="20" y="18" width="840" height="320" rx="18" fill="#f8fafc" stroke="#b8c8de"/>
+                <text x="40" y="44" class="caption">VPC privada · us-east-2 · duas sub-redes para ALB / subnet group RDS</text>
+                <rect x="40" y="75" width="151" height="65" rx="10" fill="#fff1e3" stroke="#e1ba93"/><text x="57" y="101" class="label">Runner EC2</text><text x="57" y="123" class="small">SSM · k6 · c7i.2xlarge</text>
+                <rect x="243" y="75" width="146" height="65" rx="10" fill="#e7f1fc" stroke="#9bbfe6"/><text x="261" y="101" class="label">ALB interno</text><text x="261" y="123" class="small">Health: /health/live</text>
+                <rect x="441" y="75" width="164" height="65" rx="10" fill="#0f1727"/><text x="458" y="101" class="label navy-label">Fargate · API × 3</text><text x="458" y="123" class="small navy-label">1 vCPU / 2 GiB por task</text>
+                <path d="M191 108H243M389 108H441" class="edge" marker-end="url(#aws-arrow)"/>
+                <rect x="40" y="184" width="151" height="65" rx="10" fill="#fff1e3" stroke="#e1ba93"/><text x="57" y="210" class="label">Keycloak × 1</text><text x="57" y="232" class="small">Fargate · start-dev</text>
+                <path d="M191 216H214V159H523V140" class="edge dashed" marker-end="url(#aws-arrow)"/>
+                <rect x="243" y="184" width="146" height="65" rx="10" fill="#f0ebf8" stroke="#bfaddc"/><text x="261" y="210" class="label">SQS FIFO</text><text x="261" y="232" class="small">Requests · events · DLQ</text>
+                <rect x="441" y="184" width="164" height="65" rx="10" fill="#0f1727"/><text x="458" y="210" class="label navy-label">Consumer × 3</text><text x="458" y="232" class="small navy-label">Worker × 2 · Fargate</text>
+                <path d="M389 216H441" class="edge" marker-start="url(#aws-arrow)" marker-end="url(#aws-arrow)"/>
+                <rect x="681" y="123" width="158" height="83" rx="12" fill="#e7f3ec" stroke="#9cc9af"/><text x="698" y="151" class="label">RDS PostgreSQL 17</text><text x="698" y="175" class="small">Single-AZ · TLS</text><text x="698" y="193" class="small">db.m7g.2xlarge</text>
+                <path d="M605 108H642V147H681M605 216H642V183H681" class="edge" marker-end="url(#aws-arrow)"/>
+                <rect x="40" y="282" width="799" height="36" rx="8" fill="#eef2f7"/>
+                <text x="57" y="305" class="small">8 interface endpoints + gateway S3 · Sem NAT, IGW, IP público ou SSH · Métricas acessíveis só na rede privada</text>
+              </svg>
+            </div>
+            <p class="fine" style="margin-top:14px">Tasks, runner, RDS e interface endpoints ficam na AZ principal para a campanha. RDS usa 100 GiB gp3; a infraestrutura não demonstra alta disponibilidade nem autoscaling. Keycloak <code>start-dev</code> com banco embarcado serve à demonstração, não a produção.</p>
+          </div>
+          <figcaption><strong>Diagrama 4.</strong> Topologia de execução selecionável. O desenho descreve a infraestrutura versionada; não é um inventário de recursos atualmente ativos nem um resultado de benchmark.</figcaption>
+        </figure>
+        <div class="grid two">
+          <article class="card"><h3>Saúde é uma pergunta específica</h3><p><code>/health/live</code> verifica o processo. <code>/health/ready</code> verifica PostgreSQL e metadados das três filas, além do encerramento. Readiness não comprova capacidade, backlog drenado ou disponibilidade do emissor de JWT.</p><p>O ALB usa liveness para não remover uma task viva por uma falha transitória de dependência. A admissão da aplicação continua usando readiness.</p></article>
+          <article class="card"><h3>Visibilidade sem expor os dados</h3><p>Logs estruturados ligam correlação, mensagem, transação e wallet sem registrar payload financeiro completo ou credenciais. Métricas acompanham resultados, duplicatas, retries, DLQ, locks e atraso do outbox.</p><p><code>/metrics</code> permanece na rede privada; não há rota do ALB para esse caminho. A role da API consulta metadados SQS, sem permissão de enviar ou consumir mensagens.</p></article>
+        </div>
+        <p class="sources">Fontes: <a href="../compose.yaml">Compose</a> · <a href="../docker/nginx/nginx.conf">Nginx</a> · <a href="../infra/aws/README.md">topologia AWS</a> · <a href="../infra/aws/alb.tf">ALB</a> · <a href="../infra/aws/ecs.tf">ECS</a> · <a href="../infra/aws/database.tf">RDS</a> · <a href="../src/observability">observabilidade</a>.</p>
+      </section>
+
+      <section id="decisoes" aria-labelledby="decisoes-title">
+        <span class="section-no">08 / DECISÕES E TRADE-OFFS</span><h2 id="decisoes-title">Garantias explícitas, limites também.</h2>
+        <p class="lead">O desenho mantém a decisão financeira pequena o suficiente para caber em uma transação e deixa a comunicação externa para etapas recuperáveis.</p>
+        <div class="grid two">
+          <article class="card decision"><h3>Dinheiro exato em todas as fronteiras</h3><p><code>Money</code> usa centavos em <code>bigint</code>. HTTP/eventos usam string com duas casas; MikroORM usa <code>DecimalType("string")</code> e o banco <code>numeric(18,2)</code>. Datas usam UTC.</p><p class="tradeoff">Entradas inválidas não são arredondadas nem normalizadas silenciosamente. Moedas diferentes não podem participar da mesma operação de Money.</p></article>
+          <article class="card decision"><h3>Lock pessimista na unidade financeira</h3><p>A decisão usa o saldo protegido da wallet. A versão acompanha cada movimento; o banco impede saldo negativo e versões repetidas do ledger.</p><p class="tradeoff">Uma wallet muito concorrida serializa seu próprio trabalho. Wallets independentes ainda dividem conexões, CPU, disco e broker; o desenho não promete paralelismo ilimitado.</p></article>
+          <article class="card decision"><h3>Domínio separado dos adapters</h3><p>Entidades usam factories, construtores privados e <code>rehydrate</code>. O domínio não importa NestJS, MikroORM ou SDK AWS; o mapeamento fica na infraestrutura.</p><p class="tradeoff">O monólito continua uma unidade de código e entrega. Roles permitem dimensionar tipos de trabalho sem introduzir comunicação remota entre módulos.</p></article>
+          <article class="card decision"><h3>Consistência SQL, entrega com repetição</h3><p>Inbox e outbox persistem os dois lados do processamento. Retries podem repetir mensagens sem exigir uma transação distribuída com o broker.</p><p class="tradeoff">Consumidores externos precisam deduplicar <code>eventId</code> e respeitar versões/limites de ordenação. Uma fila de eventos não fornece fan-out para consumidores independentes.</p></article>
+        </div>
+        <div class="callout"><strong>Como avaliar a implementação.</strong><p>Os cenários de unidade, integração, concorrência e falha verificam PostgreSQL e SQS reais, duplicatas, operações fora de ordem, crashes e indisponibilidade. A igualdade wallet/ledger encerra a verificação financeira. Resultados de carga pertencem à revisão e ao ambiente identificados na evidência.</p></div>
+        <div class="read-more">
+          <a href="../ARCHITECTURE.md">Contratos e decisões completos ↗<span>Schema, falhas, eventos e referências ao código</span></a>
+          <a href="verification.md">Cenários e evidências ↗<span>Como verificar invariantes e recuperação</span></a>
+          <a href="load-test.md">Método dos testes de carga ↗<span>Reprodução, resultados e limites de medição</span></a>
+        </div>
+      </section>
+      <footer><span>Jungle Wagering · explicação da arquitetura implementada</span><span>HTML independente · SVG nativo · sem dependências externas</span></footer>
+    </div>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+      const channelData = {
+        http: {
+          title: "HTTP → SubmitWagerTransaction",
+          description: "JWT e escopos autorizam o provedor. O comando leva Idempotency-Key; o resultado ou conflito só volta ao adapter depois de concluir a transação SQL.",
+          inbox: "HTTP não cria inbox. Na entrada SQS, o claim persistente abre a mesma unidade de trabalho.",
+          finishTitle: "Responder ao HTTP",
+          finish: "Retornar o resultado armazenado e o indicador de replay, ou o conflito de identidade."
+        },
+        sqs: {
+          title: "SQS → WagerConsumer → SubmitWagerTransaction",
+          description: "O consumer valida o envelope e fornece messageId/hash ao inbox. Após commit, confirma resultados ou duplicatas; FAILED segue à DLQ antes do ACK. Falha no encaminhamento ou ACK permite redelivery.",
+          inbox: "Claim de consumer_name + message_id dentro da UOW. Hash incompatível interrompe o processamento e leva a mensagem à DLQ.",
+          finishTitle: "ACK depois do commit",
+          finish: "DeleteMessage confirma a entrega. Para FAILED, o envio à DLQ precisa ter sucesso antes de remover a origem."
+        }
+      };
+      const channelButtons = [...document.querySelectorAll("[data-channel]")];
+      channelButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const data = channelData[button.dataset.channel];
+          channelButtons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+          document.getElementById("channel-title").textContent = data.title;
+          document.getElementById("channel-description").textContent = data.description;
+          document.getElementById("inbox-description").textContent = data.inbox;
+          document.getElementById("finish-title").textContent = data.finishTitle;
+          document.getElementById("finish-description").textContent = data.finish;
+        });
+      });
+
+      const tabs = [...document.querySelectorAll("[data-topology]")];
+      function selectTopology(tab, focus) {
+        tabs.forEach((item) => {
+          const selected = item === tab;
+          item.setAttribute("aria-selected", String(selected));
+          item.tabIndex = selected ? 0 : -1;
+          document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
+        });
+        if (focus) tab.focus();
+      }
+      tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => selectTopology(tab, false));
+        tab.addEventListener("keydown", (event) => {
+          let target;
+          if (event.key === "ArrowRight") target = tabs[(index + 1) % tabs.length];
+          if (event.key === "ArrowLeft") target = tabs[(index - 1 + tabs.length) % tabs.length];
+          if (event.key === "Home") target = tabs[0];
+          if (event.key === "End") target = tabs[tabs.length - 1];
+          if (!target) return;
+          event.preventDefault();
+          selectTopology(target, true);
+        });
+      });
+      if (tabs.length) selectTopology(tabs[0], false);
+
+      const links = [...document.querySelectorAll('.dock nav a[href^="#"]')];
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries) => {
+          const visible = entries.filter((entry) => entry.isIntersecting)
+            .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+          if (!visible.length) return;
+          const current = "#" + visible[0].target.id;
+          links.forEach((link) => {
+            if (link.getAttribute("href") === current) link.setAttribute("aria-current", "location");
+            else link.removeAttribute("aria-current");
+          });
+        }, { rootMargin: "-5% 0px -60% 0px", threshold: 0 });
+        document.querySelectorAll("header[id], main section[id]").forEach((section) => observer.observe(section));
+      }
+    })();
+  </script>
+</body>
+</html>

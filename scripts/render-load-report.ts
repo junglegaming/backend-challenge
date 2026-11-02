@@ -88,7 +88,7 @@ export function canonical(value: unknown): string {
 function equality(left: unknown, right: unknown, code: string): void {
   if (left !== right) throw new Error(code);
 }
-function financial(verification: JsonObject, result: JsonObject, remote: boolean): void {
+export function financial(verification: JsonObject, result: JsonObject, remote: boolean): void {
   for (const key of [
     "wallets",
     "transactions",
@@ -424,7 +424,7 @@ export function readAggregate(
     closeSync(fd);
   }
 }
-function counterView(raw: unknown): PhaseView["counters"] {
+export function counterView(raw: unknown): PhaseView["counters"] {
   const input = object(raw),
     before = object(input.before),
     after = object(input.after);
@@ -479,7 +479,7 @@ function promSeries(raw: unknown, name: string): { metric: JsonObject; points: P
     return { metric, points };
   });
 }
-function combined(raw: unknown, name: string, mode: "sum" | "max"): Curve[] {
+export function combined(raw: unknown, name: string, mode: "sum" | "max"): Curve[] {
   const series = promSeries(raw, name);
   return series.length
     ? [
@@ -524,7 +524,7 @@ function processingQuantiles(raw: unknown): Curve[] {
     };
   });
 }
-function queues(raw: unknown): Curve[] {
+export function queues(raw: unknown): Curve[] {
   const groups = new Map<string, Point[][]>();
   for (const entry of promSeries(raw, "queue_depth")) {
     const queue = String(entry.metric.queue),
@@ -1242,7 +1242,7 @@ export function reportHtml(view: ReportView): string {
     ) +
     "<p>Envio e consumo se sobrepõem. O burst curto não mede capacidade sustentada ou percentil por mensagem. A série SQS disponível contém somente uma fronteira anterior ao primeiro envio; por isso nenhuma curva de consumo/publicação SQS é desenhada. As durações e contagens acima têm fontes e janelas próprias. Concorrência de batches configurada: " +
     number(view.generator.batchConcurrency, 0) +
-    '.</p></section><section id="experiencias"><h2>Experiência rejeitada e provas de recuperação separadas</h2><p><strong>Persistência em lote da outbox: experiência REJEITADA.</strong> O candidato não foi retido; nenhum ganho de desempenho é reivindicado. A metodologia, os critérios e o resultado fechado estão na <a href="../load-test.md#experiência-controlada-de-persistência-em-lote-da-outbox">experiência controlada documentada em load-test.md</a>. Seus benchmarks não alimentam estes gráficos.</p><p>As provas aceitas de falhas e recuperação pertencem às campanhas descritas em <a href="../verification.md#manual-entregue-oito-seletores-pass">verification.md: oito seletores manuais</a>. A <a href="../verification.md#gnu-seis-rodadas-funcionais-waiver-e-falha-formal-do-wrapper">campanha GNU de seis rodadas e a falha formal do wrapper</a> mantém seu waiver e seu resultado próprios. Esses vínculos editoriais não leem artefatos adicionais, não transformam testes de falha em amostras de carga e não alteram o denominador deste painel.</p></section><section id="limites"><h2>Lacunas que permanecem visíveis</h2><ul><li>Sem três FULL AWS aceitos ou comparação quantitativa local/AWS. Nenhuma otimização de performance foi retida.</li><li>CPU, memória, rede, RDS e ALB não pertencem aos agregados admitidos; não são gráficos vazios com zero.</li><li>Claim PostgreSQL, send SQS, confirm PostgreSQL, latência por evento e cardinalidade SQL ao longo do tempo: não medidos por estes arquivos.</li><li>Não há trecho QUICK após excluir 30 s nem série durante toda a drenagem. NaN e séries ausentes permanecem lacunas; sem suavização ou deslocamento temporal.</li><li>Conflitos de lock sem série não significam zero conflitos. Histogramas por réplica não viram percentil global por média.</li></ul><p>Prova financeira e cobertura de eventos são resultados do verificador salvo. O renderer não consulta o banco ou reconstrói o ledger.</p></section><section id="reproducao"><h2>Reproduzir com Bun, sem serviço ou rede</h2><p>O script acompanha o clone e usa somente Bun e APIs nativas. Forneça os três diretórios com os agregados autorizados e uma pasta de saída nova; nenhum caminho privado de planejamento é default. Nenhum agregado bruto com identificadores precisa ser commitado.</p><pre>BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true bun --no-env-file scripts/render-load-report.ts \\\n  --aws-quick /caminho/agregados-quick \\\n  --local-full /caminho/agregados-full-local \\\n  --aws-full-1 /caminho/agregados-full-aws \\\n  --output-dir /caminho/novo-relatorio</pre><p>Os leitores abrem somente result.json, verification.json, environment.json e os quinze nomes literais de fase/counters/prometheus. Os FULL excluídos não têm suas fases abertas. Mistura de fonte/hash é recusada mesmo quando o run seria excluído. HTML/SVG usam conteúdo inline, sem bibliotecas, fontes, scripts ou serviços externos.</p><details><summary>Proveniência dos ' +
+    '.</p></section><section id="experiencias"><h2>Experiência rejeitada e provas de recuperação separadas</h2><p><strong>Persistência em lote da outbox: experiência REJEITADA.</strong> O candidato não foi retido; nenhum ganho de desempenho é reivindicado. A metodologia, os critérios e o resultado fechado estão na <a href="../load-test.md">experiência controlada documentada em load-test.md</a>. Seus benchmarks não alimentam estes gráficos.</p><p>As provas aceitas de falhas e recuperação pertencem às campanhas descritas em <a href="../verification.md">verification.md: oito seletores manuais</a>. A <a href="../verification.md">campanha GNU de seis rodadas e a falha formal do wrapper</a> mantém seu waiver e seu resultado próprios. Esses vínculos editoriais não leem artefatos adicionais, não transformam testes de falha em amostras de carga e não alteram o denominador deste painel.</p></section><section id="limites"><h2>Lacunas que permanecem visíveis</h2><ul><li>Sem três FULL AWS aceitos ou comparação quantitativa local/AWS. Nenhuma otimização de performance foi retida.</li><li>CPU, memória, rede, RDS e ALB não pertencem aos agregados admitidos; não são gráficos vazios com zero.</li><li>Claim PostgreSQL, send SQS, confirm PostgreSQL, latência por evento e cardinalidade SQL ao longo do tempo: não medidos por estes arquivos.</li><li>Não há trecho QUICK após excluir 30 s nem série durante toda a drenagem. NaN e séries ausentes permanecem lacunas; sem suavização ou deslocamento temporal.</li><li>Conflitos de lock sem série não significam zero conflitos. Histogramas por réplica não viram percentil global por média.</li></ul><p>Prova financeira e cobertura de eventos são resultados do verificador salvo. O renderer não consulta o banco ou reconstrói o ledger.</p></section><section id="reproducao"><h2>Reproduzir com Bun, sem serviço ou rede</h2><p>O script acompanha o clone e usa somente Bun e APIs nativas. Forneça os três diretórios com os agregados autorizados e uma pasta de saída nova; nenhum caminho privado de planejamento é default. Nenhum agregado bruto com identificadores precisa ser commitado.</p><pre>BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true bun --no-env-file scripts/render-load-report.ts \\\n  --aws-quick /caminho/agregados-quick \\\n  --local-full /caminho/agregados-full-local \\\n  --aws-full-1 /caminho/agregados-full-aws \\\n  --output-dir /caminho/novo-relatorio</pre><p>Os leitores abrem somente result.json, verification.json, environment.json e os quinze nomes literais de fase/counters/prometheus. Os FULL excluídos não têm suas fases abertas. Mistura de fonte/hash é recusada mesmo quando o run seria excluído. HTML/SVG usam conteúdo inline, sem bibliotecas, fontes, scripts ou serviços externos.</p><details><summary>Proveniência dos ' +
     view.files.length +
     ' agregados efetivamente abertos</summary><div class="hashes">' +
     table(
@@ -1324,9 +1324,17 @@ export function writeReport(paths: Record<InputKey, string>, output: string): Re
   }
   return report;
 }
-if (import.meta.main) {
+if (
+  import.meta.main &&
+  (process.argv.includes("--campaign") || process.argv.includes("--campaign-data"))
+) {
+  const { runCampaignCli } = await import("./render-load-campaign");
+  runCampaignCli(process.argv.slice(2));
+} else if (import.meta.main) {
   const usage =
-    "Uso: bun --no-env-file scripts/render-load-report.ts --aws-quick DIR --local-full DIR --aws-full-1 DIR --output-dir NEW_DIR";
+    "Uso: bun --no-env-file scripts/render-load-report.ts --aws-quick DIR --local-full DIR --aws-full-1 DIR --output-dir NEW_DIR\n" +
+    "FULL: bun --no-env-file scripts/render-load-report.ts --campaign local|aws --run DIR [--run DIR] --output-dir NEW_DIR\n" +
+    "Offline: bun --no-env-file scripts/render-load-report.ts --campaign-data campaign.json --output-dir NEW_DIR";
   if (process.argv.length === 3 && process.argv[2] === "--help") {
     console.log(usage);
   } else {
