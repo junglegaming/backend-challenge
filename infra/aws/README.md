@@ -62,9 +62,15 @@ sensível. Não use os defaults locais do Compose. O RDS gerencia sua senha no S
 forneça senha no Terraform nem publique seu valor. Execution roles injetam os secrets necessários,
 separadas das task roles. A API só lê URL/atributos das três filas, conforme exceção de readiness
 autorizada em D26. Consumer e worker têm operações de mensagem distintas, nas filas exatas.
-Apenas a fila de eventos usa FIFO de alta vazão: `deduplication_scope=messageGroup` e
-`fifo_throughput_limit=perMessageGroupId`, configuração retida após throttling observado. As filas
-de requests e DLQ conservam seus atributos.
+As filas de requests e eventos declaram FIFO de alta vazão:
+`deduplication_scope=messageGroup` e `fifo_throughput_limit=perMessageGroupId`.
+O par de requests foi acrescentado após o FULL falho; seus atributos históricos
+não foram preservados, portanto essa mudança não prova a causa daquela falha.
+Antes do seed remoto, o instrumento lê os quatro atributos de modo de ambas as
+filas e exige FIFO, deduplicação explícita e esse par de alta vazão. O arquivo
+`sqs-queue-modes.json` contém somente aliases e valores fechados, sem URL ou ARN.
+A DLQ conserva seus atributos. A configuração declarada precisa do readback real
+de uma implantação autorizada para ser considerada observada.
 
 O Dockerfile AWS do Keycloak copia o mesmo realm de `docker/keycloak/`; placeholders são resolvidos
 com secrets na importação. O bundle público de CAs RDS de Ohio está em

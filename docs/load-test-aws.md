@@ -48,6 +48,29 @@ históricos de outra fonte não preenchem essa lacuna. Ver
 [fronteiras e reprodução dos gráficos](load-test.md#relatório-visual-e-reprodução-dos-gráficos).
 Não há ganho de desempenho demonstrado nem otimização de desempenho retida.
 
+## Correção local posterior ao FULL falho
+
+O gerador remoto agora trata `RequestThrottled` HTTP 400/403 com até sete
+tentativas e prazo total de 20 s por lote. Cada chamada respeita o tempo restante,
+com teto de 10 s; o backoff usa jitter e responde ao cancelamento da campanha.
+As identidades e os corpos das mensagens permanecem iguais. Respostas parciais
+precisam confirmar cada entrada exatamente uma vez: somente entradas com throttle
+e `SenderFault=false` são reenviadas. Erro permanente, confirmação inconsistente
+ou esgotamento encerra a produção e mantém a rodada reprovada.
+
+Requests passa a declarar o mesmo modo FIFO de alta vazão de events. Um preflight
+registra e valida os atributos efetivos antes de criar carteiras. O runner coleta
+`sqs-queue-modes.json` e `sqs-producer.json`, com atributos fechados e contadores,
+inclusive na falha de produção. A política do SDK compartilhado e o caminho
+Compose conservam uma tentativa; os critérios financeiros e de conclusão da
+carga permanecem os mesmos.
+
+Essa correção trata uma falha alcançável do gerador, cuja implementação anterior
+encerrava no primeiro throttle. A operação terminal histórica continua desconhecida.
+Testes com falhas injetadas não comprovam recuperação de throttling AWS real.
+Uma nova medição exige autorização para outra sessão e orçamento: os resultados
+anteriores não foram reclassificados, e ainda não há FULL AWS aprovado nesta fonte.
+
 ## Custo e encerramento
 
 O limite autorizado foi US$ 10 e duas sessões. O custo final atribuível ao projeto

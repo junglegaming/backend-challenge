@@ -12,7 +12,12 @@ import {
   parseResponseEvidence,
   responseKey,
 } from "../load/response-evidence";
-import { produceBacklog } from "../load/sqs-producer";
+import {
+  assertRemoteQueueModes,
+  createBacklogSender,
+  produceBacklog,
+  readRemoteQueueModes,
+} from "../load/sqs-producer";
 import { loadTarget, plateauPhases, remoteTokens, verifyLoadManifest } from "../load/target";
 import { parseConfiguration } from "../src/config/config";
 import { SqsTransport } from "../src/messaging/infrastructure/sqs-transport";
@@ -114,6 +119,7 @@ let database: Database | undefined;
 let transport: SqsTransport | undefined;
 let dependencies: Dependencies | undefined;
 let observer: LoadEventObserver | undefined;
+let backlogSender: ReturnType<typeof createBacklogSender> | undefined;
 let stopSampler: ReturnType<typeof remoteSampler> | undefined;
 const token = target.remote ? remoteTokens(target.tokenUrl, environment) : accessToken;
 const write = (name: string, data: unknown) =>
@@ -252,6 +258,10 @@ try {
       `load-events:${runId}`,
       cancellation.signal,
     );
+    const queueModes = await readRemoteQueueModes(transport, cancellation.signal);
+    await write("sqs-queue-modes", queueModes);
+    assertRemoteQueueModes(queueModes);
+    backlogSender = createBacklogSender(transport, cancellation.signal);
   }
   const drain = async () => {
     const start = Date.now();
@@ -705,12 +715,15 @@ try {
       }
     })();
     let producer: Awaited<ReturnType<typeof produceBacklog>>;
+    let producerError: unknown;
+    let producerStatsError: unknown;
     try {
       producer = await produceBacklog(
         transport,
         fixtures,
         sqsCount,
         target.remote ? cancellation.signal : undefined,
+        backlogSender,
       );
       await pollUntil(
         "all intended SQS commands committed",
@@ -728,10 +741,22 @@ try {
         60_000,
         250,
       );
+    } catch (error) {
+      producerError = error;
+      throw error;
     } finally {
       sampling = false;
       await sampler;
+      if (backlogSender) {
+        try {
+          await write("sqs-producer", backlogSender.stats);
+        } catch (error) {
+          producerStatsError = error;
+          console.error("SQS producer statistics could not be persisted");
+        }
+      }
     }
+    if (producerStatsError && !producerError) throw producerStatsError;
     if (samplingError) throw new Error("SQS backlog sampling failed");
     if (sampledBacklogPeak <= 0) throw new Error("SQS workload produced no observable backlog");
     const sqsEnd = Date.now();

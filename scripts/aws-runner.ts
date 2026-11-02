@@ -590,7 +590,7 @@ try {
     for (const directory of runId ? [runId] : []) {
       for (const name of await readdir(`${resultsPath}/${directory}`)) {
         if (
-          !/^(?:fixtures|expected|environment|verification|partial-verification|result|failure|participation|publication-latency|event-observer(?:-partial)?|resource-backlog-samples|(?:hot_wallet|distributed_wallets|replays|hot_plus_distributed|sqs_backlog|plateau_[a-z0-9_]+)(?:-counters|-prometheus(?:-through-drain)?|-responses)?)\.(?:json|jsonl|txt)$/.test(
+          !/^(?:fixtures|expected|environment|verification|partial-verification|result|failure|participation|publication-latency|event-observer(?:-partial)?|resource-backlog-samples|sqs-queue-modes|sqs-producer|(?:hot_wallet|distributed_wallets|replays|hot_plus_distributed|sqs_backlog|plateau_[a-z0-9_]+)(?:-counters|-prometheus(?:-through-drain)?|-responses)?)\.(?:json|jsonl|txt)$/.test(
             name,
           )
         )
