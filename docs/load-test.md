@@ -557,6 +557,8 @@ O PASS manual e as repetições de concorrência não substituem essa reprovaç�
 
 ### Ambiente AWS e limites da campanha
 
+O [relatório específico AWS](load-test-aws.md) reúne o fechamento desta extensão e os links para suas evidências canônicas.
+
 A segunda e última implantação usou somente `us-east-2`, com três APIs, três
 consumers e dois workers Fargate (1 vCPU/2 GB cada), Keycloak, RDS PostgreSQL 17
 single-AZ `db.m7g.2xlarge` com gp3 de 100 GB e TLS verificado, FIFO SQS gerenciado,

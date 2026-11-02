@@ -383,7 +383,7 @@ O painel quantitativo usa apenas smoke5 **QUICK diagnóstico**, uma execução d
 
 ## Extensão AWS opcional
 
-A [operação AWS](infra/aws/README.md) descreve uma extensão separada, com endpoints privados, imagens por digest, manifesto de origem fixado e infraestrutura própria. Ela não acrescenta AWS CLI, conta AWS ou ferramentas de cloud aos requisitos do roteiro local. O bootstrap local continua criando filas; na extensão, `BOOTSTRAP_CREATE_QUEUES=false` deixa essa propriedade com o Terraform. A ausência do par de credenciais estáticas permite a role pela cadeia padrão do SDK.
+A [operação AWS](infra/aws/README.md) descreve uma extensão separada, com endpoints privados, imagens por digest, manifesto de origem fixado e infraestrutura própria. O [relatório AWS](docs/load-test-aws.md) registra os resultados observados e as limitações da tentativa. Ela não acrescenta AWS CLI, conta AWS ou ferramentas de cloud aos requisitos do roteiro local. O bootstrap local continua criando filas; na extensão, `BOOTSTRAP_CREATE_QUEUES=false` deixa essa propriedade com o Terraform. A ausência do par de credenciais estáticas permite a role pela cadeia padrão do SDK.
 
 Para PostgreSQL remoto, `DB_SSL_CA_FILE` habilita TLS com CA e identidade verificadas. O bundle público de `us-east-2` está em [docker/aws/us-east-2-bundle.crt](docker/aws/us-east-2-bundle.crt); sua origem e hash estão em [ARCHITECTURE.md](ARCHITECTURE.md). A readiness e o sampler continuam consultando PostgreSQL e as três filas. A role da API recebe somente `sqs:GetQueueUrl` e `sqs:GetQueueAttributes` nessas filas, sem enviar, receber ou remover mensagens.
 
