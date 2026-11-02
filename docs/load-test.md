@@ -4,6 +4,26 @@ Este experimento compara contenção em uma carteira, distribuição entre mil c
 replays e processamento de backlog SQS. A aceitação combina os resultados HTTP com
 operações persistidas, reconciliação e a cadeia completa do ledger. Não existe meta de RPS.
 
+## Estado das evidências
+
+As três rodadas completas A/B/C abaixo são **históricas**, da fonte `06e6165`
+e do hash de carga `c99c4ac6e9f568ae3a718b9e0bff973b3a143a355875fbe85e9d4a420e4dd9de`.
+A carga completa local posterior e a primeira carga completa AWS de `a98d1e6`
+**falharam**. A rodada AWS QUICK passou somente seus próprios gates. Nenhum desses
+resultados é apresentado como medição dos instrumentos corrigidos posteriormente.
+
+O [relatório visual](load-report/index.html) lê uma única coorte de fontes e exclui
+integralmente runs reprovados, parciais ou sem prova final. Na seleção nominada de
+três diretórios da coorte `a98d1e6`/`36b77c2a`, há **1/1 QUICK elegível e 0/2 FULL
+elegíveis**. Esse denominador não representa todos os ensaios de setup e diagnóstico.
+Não existe comparação FULL local/AWS aprovada nem variação entre três FULL AWS.
+A ausência desses resultados é exibida como indisponibilidade, sem curva estimada.
+
+O detalhe de concorrência, falhas, recuperação e determinismo está em
+[verification.md](verification.md). A candidata de SQL em lote foi **rejeitada e
+revertida** por não atingir o benefício previamente exigido; não houve otimização
+de throughput retida a partir dessa experiência.
+
 ## Reprodução
 
 Com Bun 1.4.3 e Docker Compose disponíveis, execute na raiz do repositório:
@@ -510,3 +530,167 @@ pelo Docker não representam recursos exclusivos do processo. O limite de VUs e 
 precisam ser considerados ao atribuir saturação à aplicação. A correção financeira é
 verificada no estado final; os cenários determinísticos de crash e indisponibilidade ficam
 nas suítes `test:concurrency` e `test:failure`.
+
+## Execuções posteriores: fonte retida e AWS
+
+Esta seção conserva os resultados posteriores separadamente de A/B/C. A fonte da
+aplicação foi `a98d1e6fe248f2e6bee4f2cf54317fc961aab062`, com árvore limpa durante
+as campanhas. O hash dos 16 fontes de carga foi
+`36b77c2acde5dc63e35cff9f950c021a8c14601333d87cf590d47de5cc94f161`.
+O inventário completo de 115 caminhos também identifica configuração e instrumentos;
+igualdade do commit não implica igualdade entre ambiente local e AWS.
+
+### FULL local retido: FAIL
+
+A execução `2026-11-01T22-25-40-451Z-d9d6e892` durou 2.365,950 s
+(39 min 26 s). As quatro fases HTTP terminaram, mas o backlog SQS não chegou às
+10.000 operações exigidas dentro de 180 s. A observação posterior de 9.910 não
+satisfaz a barreira nem transforma a rodada em PASS. Não existe `result.json`
+completo aprovado dessa execução.
+
+A prova parcial registrou 1.001 carteiras, 90.351 transações e 180.702 eventos
+outbox, ainda com 6.862 não publicados. A parcial passou 2.009 asserções dentro do
+seu próprio alcance; não comprova aceitação FULL, esvaziamento final da outbox,
+DLQ vazia ou participação final de todas as réplicas. As quatro drenagens HTTP
+foram 105.105, 354.193, 335.984 e 728.587 ms, somando 1.523.869 ms.
+O PASS manual e as repetições de concorrência não substituem essa reprovação.
+
+### Ambiente AWS e limites da campanha
+
+A segunda e última implantação usou somente `us-east-2`, com três APIs, três
+consumers e dois workers Fargate (1 vCPU/2 GB cada), Keycloak, RDS PostgreSQL 17
+single-AZ `db.m7g.2xlarge` com gp3 de 100 GB e TLS verificado, FIFO SQS gerenciado,
+ALB interno e runner privado `c7i.2xlarge` por SSM. Não houve NAT Gateway, IP público
+ou SSH. A aplicação foi a mesma fonte a98; permissões, filas e instrumentação
+operacional têm suas próprias revisões e recibos.
+
+O objetivo prévio era smoke, três FULL e patamares constantes. A primeira sessão
+foi encerrada após falha de implantação; não produziu carga aprovada. Na segunda,
+falhas de setup e diagnóstico foram preservadas, o QUICK aprovado foi seguido de
+um FULL reprovado, e a dependência de aprovação do predecessor impediu FULL2,
+FULL3 e patamares. Não se iniciou uma terceira sessão ou retry de rodada para
+escolher resultado favorável. Não há capacidade sustentada AWS medida.
+
+O orçamento autorizado foi US$ 10. A leitura do Budgets às **06:32:53 UTC de
+02/11/2026** confirmou um orçamento mensal de US$ 10, sem filtro de projeto,
+com créditos excluídos, e valor reportado de US$ 0. O atraso dessa informação
+é desconhecido: **custo final faturado e saldo real permanecem indisponíveis**.
+O valor reportado não significa campanha gratuita. Os modelos conservadores
+usados para admitir janelas, o ledger de tempo e os recibos de parada são
+estimativas e controle operacional, sem atribuição de custo faturado por projeto.
+O destroy Terraform terminou com exit 0 às **06:19:03 UTC**; a verificação remota
+de limpeza é registrada separadamente em [verification.md](verification.md).
+
+### AWS QUICK aprovado: alcance e valores dos gráficos
+
+A execução `2026-11-02T05-03-13-035Z-f8c997b6` terminou com `passed=true` e
+verificação `partial=false`. Sua janela global foi **05:03:13.036–05:05:33.738 UTC**
+(140,702 s), incluindo seed, barreiras e drenagens; não é duração de tráfego HTTP.
+Foram 1.001 carteiras reconciliadas, 3.251 transações processadas/entradas ledger,
+6.502 eventos outbox publicados e 7.502 inbox (1.000 requests + 6.502 events).
+O verificador salvo aprovou as assertions de não negatividade e igualdade entre saldo
+e reconstrução do ledger; esses dois contadores não foram exportados no agregado.
+Os contadores exportados de efeitos duplicados, eventos faltantes, eventos extras,
+inbox inacabado e DLQ foram zero nessa prova final.
+
+| Workload QUICK | Requisições concluídas | k6 p50 / p95 / p99, ms |
+| --- | ---: | ---: |
+| Carteira concentrada | 251 | 13,164591 / 19,8727835 / 22,8096465 |
+| Distribuída | 251 | 12,164116 / 17,673816 / 20,6960605 |
+| Replays: operações novas | 226 | 11,546586 / 14,9114485 / 17,5743135 |
+| Replays: repetidas | 25 | 8,322784 / 12,3270192 / 14,37993352 |
+| Mista: concentrada | 251 | 11,209330 / 18,599419 / 45,151222 |
+| Mista: distribuída | 251 | 11,002815 / 17,261541 / 41,1588095 |
+
+As quatro fases totalizaram 1.255 respostas, sendo 1.230 novas e 25 replays.
+O resumo de conclusão registrou zero descartes, mas a série k6
+`dropped_iterations` não foi emitida: ausência da métrica não é uma amostra zero.
+As quatro fases usaram no máximo 1/1/1/2 VUs. A drenagem residual da outbox foi
+1/0/0/1 ms; as barreiras de cobertura de eventos levaram 8/9/10/11 ms.
+Esses tempos de barreira são distintos de latência HTTP e de publicação por evento.
+
+O backlog QUICK tinha 1.000 mensagens e grupos, enqueue de 167 ms, último commit
+4.418 ms depois do enqueue, 4.585 ms desde o início e pico observado de 998.
+A drenagem residual outbox foi 0 ms e a barreira final de eventos levou 1.889 ms.
+Os contadores de cobertura 2.544/3.046/3.498/4.502/6.502 são cumulativos; não devem
+ser somados. Todas as três APIs e os dois workers tiveram contadores positivos;
+as séries de consumers não fornecem baseline completo por réplica, portanto
+não se inventa uma distribuição individual de commits.
+
+Prometheus guardou cinco instantes de cinco em cinco segundos por fase HTTP,
+sem série contínua da drenagem. As consultas de taxa/quantis usam sua janela
+de lookback de 30 s, que pode alcançar a fase anterior; não representam patamar
+estável dos estágios de 7 s. Algumas amostras de quantis estão ausentes/NaN,
+e conflitos de lock não foram emitidos. O único ponto Prometheus do backlog
+antecede o produtor em cerca de 2 ms: ele não forma uma curva de drenagem.
+Gaps, baseline ausente e métricas indisponíveis continuam explícitos nos gráficos.
+
+### AWS FULL1: FAIL, sem gráficos de sucesso
+
+A execução `2026-11-02T05-25-09-577Z-5faa73a3` terminou com `RequestThrottled`
+e exit 1. As quatro fases HTTP passaram seus checks, mas o FULL global não passou.
+Foram preservados os resumos HTTP, artefatos parciais e diagnósticos; não existem
+`result.json` e `verification.json` completos aprovados. O renderer exclui a
+rodada inteira e não usa suas fases verdes como gráficos aprovados.
+
+O observador confirmou 136.572 ACKs em 141.359 tentativas, com 4.787 retries e
+zero falhas finais de ACK. O primeiro erro SDK registrado era um DeleteMessage
+403 recuperado; **não é a operação fatal posterior**, que não foi preservada.
+SendMessageBatch é uma inferência forte pelo fluxo e pela interrupção do enqueue,
+sem comprovação direta da operação terminal. O verificador parcial também falhou
+na igualdade entre total inbox e suas classes; esperados/recebidos não foram
+retidos. A possibilidade de snapshots distintos foi reproduzida depois, mas não
+estabelece retrospectivamente a causa dessa falha específica.
+
+Depois de parar os quatro serviços, uma única consulta forense read-only,
+REPEATABLE READ e TLS, às **05:44:34–05:44:44 UTC**, encontrou 1.001 carteiras
+consistentes, zero negativas, 74.210 transações processadas e entradas ledger,
+148.420 outbox e zero não publicados. Duplicações, pares financeiros inválidos e
+ledger órfão foram zero. Porém havia **136.572 efeitos de eventos e 11.848
+faltantes**, com zero extras: cobertura incompleta. São 142.662 inbox (6.090
+requests + 136.572 events). A invariância financeira desse snapshot é válida;
+`campaignAcceptance=false` e `eventCoverage=false` permanecem. Não se promoveu
+essa observação posterior a verificação final do FULL.
+
+### Correções posteriores dos instrumentos
+
+O suporte nativo ao ACK transitório ficou restrito ao consumidor de eventos do
+teste de carga, com limite de tentativas e tempo, cancelamento e drain no shutdown.
+O efeito SQL já commitado não é reexecutado para repetir DeleteMessage. O runner
+também trata explicitamente permissão do YAML não secreto do Prometheus e sua
+prontidão, preserva a identidade entre erro SDK terminal e diagnóstico e colhe as
+classes inbox no mesmo statement SQL que seu total. Nenhuma mudança altera
+dinheiro, transação financeira, locking por carteira, idempotência, ledger,
+outbox de produção, migrations ou contratos HTTP/SQS.
+
+Essas correções são posteriores aos resultados a98 acima. Sua aprovação depende
+dos testes dirigidos e gates da fonte final, identificados em
+[verification.md](verification.md). Elas não receberam nova campanha AWS FULL
+nem autorizam atribuir a elas o QUICK anterior. A política de falhar diante de
+assertion, reconciliação, identidade ou limite violado continua a mesma.
+
+## Relatório visual e reprodução dos gráficos
+
+O [HTML autossuficiente](load-report/index.html) funciona por `file://`, sem rede,
+em português, nos temas claro/escuro e em tela estreita. Somente runs aprovados,
+não parciais e com a mesma identidade de fontes são elegíveis. As séries usam
+unidades, eixos Y a partir de zero, fronteiras de fase e lacunas explícitas.
+Não existe downsampling que esconda picos nem média entre percentis de rodadas.
+Os gráficos SVG permitem leitura direta no GitHub; o relatório completo explica
+as métricas indisponíveis e as duas exclusões FULL desta seleção.
+
+![Resumo da coorte QUICK AWS aprovada e exclusões FULL](load-report/overview.svg)
+
+![Séries da fase de carteira concentrada, AWS QUICK](load-report/hot_wallet.svg)
+
+![Séries da fase de carteiras distribuídas, AWS QUICK](load-report/distributed_wallets.svg)
+
+![Séries da fase de replays, AWS QUICK](load-report/replays.svg)
+
+![Séries da fase mista, AWS QUICK](load-report/hot_plus_distributed.svg)
+
+Os artefatos financeiros individuais e os resultados brutos ficam fora do Git.
+Regenerar requer fornecer os diretórios com agregados permitidos ao script
+`scripts/render-load-report.ts`, sem instalar dependências adicionais. Ele não lê
+respostas JSONL, fixtures, payloads, manifests privados ou credenciais. A
+reprodução exata da CLI é descrita no próprio relatório após a implementação.

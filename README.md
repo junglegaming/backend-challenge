@@ -11,10 +11,15 @@ docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
 ```
 
 Troque `git . --log-opts=--all` por `dir .` para examinar a árvore atual. A configuração estende as regras padrão
-e permite apenas quatro valores públicos exatos usados no Compose local. O CI examina todo o
-histórico. Quem já tem Lefthook e Gitleaks pode executar `lefthook install` para ativar a inspeção
+e permite apenas quatro valores públicos exatos usados no Compose local. O scan de todo o histórico no CI está previsto para a Task 13. Quem já tem Lefthook e Gitleaks pode executar `lefthook install` para ativar a inspeção
 das mudanças staged antes de cada commit. Esses utilitários não são dependências dos testes.
 Arquivos de ignore evitam inclusão acidental; não controlam o acesso de agentes ao filesystem.
+
+## Relatório de carga
+
+O [relatório visual offline](docs/load-report/index.html) apresenta uma rodada AWS QUICK
+diagnóstica aprovada. As duas execuções FULL selecionadas, local e AWS, foram reprovadas
+e estão excluídas dos gráficos; o [registro de carga](docs/load-test.md) preserva seus resultados.
 
 ## Bem-vindo à Jungle Gaming 🦧
 
