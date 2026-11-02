@@ -790,6 +790,22 @@ A/B/C históricos, a comparação rejeitada da outbox, o snapshot forense e os e
 
 Os comandos finais obrigatórios, em clone limpo do commit entregue, continuam `bun install --frozen-lockfile`, `bun run check`, `bun run test`, `bun run test:failure` e `bun run test:load`. A dispensa específica de nova GNU20 não dispensa nenhum desses comandos. Scans de segredos, revisões e handoff mantêm evidências próprias, atribuídas às respectivas fontes. A demo literal abaixo cobre o recorte executado do README; não herda nem substitui o resultado dos cinco gates no último commit entregue.
 
+### Gates locais em `3fa0f86`
+
+Em 02/11/2026, um clone limpo de `3fa0f8614d4a7476f1ec495902bd2b407c082cf5` executou os cinco comandos literais com PATH restrito a Bun, Docker e ferramentas básicas de shell. Todos passaram com `sourceVerified=true`:
+
+| Comando | Resultado observado |
+| --- | --- |
+| `bun install --frozen-lockfile` | PASS, exit 0. |
+| `bun run check` | Biome e TypeScript PASS; 202 testes unitários, zero falhas e 1.666 asserções. |
+| `bun run test` | Unidade: 202/0/1.666; integração: 178/0/6.905; concorrência: 13/0/1.549, em PASS/FAIL/asserções. |
+| `bun run test:failure` | 11 PASS, zero falhas e 1.781 asserções. |
+| `bun run test:load` | QUICK completo aprovado; oráculo 1 PASS, zero falhas e 2.006 asserções. |
+
+O QUICK `2026-11-02T08-51-54-497Z-86f388f9` aprovou `passed=true` e `partial=false`: 1.001 wallets, 3.251 transações processadas e lançamentos, 6.502 eventos, 1.000 inbox, zero inbox inacabada, zero efeitos financeiros duplicados, zero outbox não publicada e DLQ zero. O projeto `wagering-test` terminou sem containers, redes ou volumes. Os recibos seguros estão nominados no manifesto externo `task-13-final-gates-3.json`; nenhum payload financeiro bruto integra este documento.
+
+Os 19 corpos Bash do README continuaram idênticos ao ledger literal anterior. No clone atual, B15 (`verify:manual --list`), B17 (Gitleaks histórico disponível) e B18 (Gitleaks árvore) passaram; ambas as varreduras tiveram zero findings. Isso não executa nova campanha manual ou GNU20. A reutilização da demo histórica exige os mesmos corpos e dependências pertinentes; a evidência acima pertence a `3fa0f86`, e os gates do commit entregue têm recibos próprios. A terceira sessão AWS mantém [identidade e resultados separados](load-test-aws.md#terceira-sessão-fonte-e-resultados).
+
 ### Demo literal do README em `4f304d6`
 
 Em 02/11/2026, de **07:26:53.722 a 07:28:12.327 UTC**, um clone limpo de `4f304d6701df8738e66e4dc4b60162d229fe2f6b` executou literalmente **B01–B13 e B19: 14 blocos, todos exit 0, em 78,605 s**. Os 19 hashes dos corpos Bash foram conferidos; os cinco blocos fora desse recorte não são declarados executados por esse registro. Uma única sessão Bash preservou as variáveis, com stdin fechado e PATH limitado a Bun, Docker e utilitários básicos de shell.

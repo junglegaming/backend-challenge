@@ -16,8 +16,10 @@ O [relatório visual](load-report/index.html) lê uma única coorte de fontes e 
 integralmente runs reprovados, parciais ou sem prova final. Na seleção nominada de
 três diretórios da coorte `a98d1e6`/`36b77c2a`, há **1/1 QUICK elegível e 0/2 FULL
 elegíveis**. Esse denominador não representa todos os ensaios de setup e diagnóstico.
-Não existe comparação FULL local/AWS aprovada nem variação entre três FULL AWS.
+Nessa coorte histórica não existe comparação FULL local/AWS aprovada nem variação entre três FULL AWS.
 A ausência desses resultados é exibida como indisponibilidade, sem curva estimada.
+
+A terceira sessão usa a fonte `3fa0f86` e mantém seus resultados no [relatório AWS](load-test-aws.md#terceira-sessão-fonte-e-resultados), com identidade e provas próprias. O painel HTML/SVG continua histórico da coorte a98/36b; não incorpora a nova fonte nem combina fases entre campanhas.
 
 O detalhe de concorrência, falhas, recuperação e determinismo está em
 [verification.md](verification.md). A candidata de SQL em lote foi **rejeitada e
@@ -656,8 +658,7 @@ outbox de produção, migrations ou contratos HTTP/SQS.
 
 Essas correções são posteriores aos resultados a98 acima. Sua aprovação depende
 dos testes dirigidos e gates da fonte final, identificados em
-[verification.md](verification.md). Elas não receberam nova campanha AWS FULL
-nem autorizam atribuir a elas o QUICK anterior. A política de falhar diante de
+[verification.md](verification.md). A medição posterior está identificada no [relatório AWS](load-test-aws.md#terceira-sessão-fonte-e-resultados); esses testes locais não autorizam atribuir às correções o QUICK anterior nem demonstram ganho causal. A política de falhar diante de
 assertion, reconciliação, identidade ou limite violado continua a mesma.
 
 ## Relatório visual e reprodução dos gráficos
