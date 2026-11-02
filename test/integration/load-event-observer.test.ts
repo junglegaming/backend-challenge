@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { CreateQueueCommand, DeleteQueueCommand, Message } from "@aws-sdk/client-sqs";
+import {
+  CreateQueueCommand,
+  DeleteQueueCommand,
+  GetQueueAttributesCommand,
+  Message,
+} from "@aws-sdk/client-sqs";
 import { LoadEventObserver } from "../../load/event-observer";
 import { completeEventCoverage, eventCoverage } from "../../load/event-verification";
 import { SqsTransport } from "../../src/messaging/infrastructure/sqs-transport";
@@ -174,3 +179,143 @@ test("remote observer proves exact identities, duplicate effects, ack completion
     await fixture.cleanup();
   }
 }, 60_000);
+
+test("event ACK throttle recovery preserves one committed SQL effect and drains before shutdown", async () => {
+  const fixture = await scratchDatabase();
+  const h = wageringHarness(fixture);
+  const queue = `load-observer-ack-${randomUUID()}.fifo`;
+  const ackRelease = Promise.withResolvers<void>();
+  let secondAckEntered = false;
+  let ackCalls = 0;
+  let deleted = 0;
+  const order: string[] = [];
+  class IsolatedTransport extends SqsTransport {
+    override queue(name: string) {
+      return super.queue(name === QUEUES.events ? queue : name);
+    }
+    override async acknowledge(name: string, message: Message) {
+      ackCalls++;
+      if (ackCalls === 1)
+        throw Object.assign(new Error("Deliberate event ACK throttle"), {
+          name: "RequestThrottled",
+          $metadata: { httpStatusCode: 403, attempts: 1 },
+        });
+      secondAckEntered = true;
+      await ackRelease.promise;
+      await super.acknowledge(name, message);
+      deleted++;
+      order.push("delete");
+    }
+  }
+  const transport = new IsolatedTransport({
+    values: { ...h.values, consumer: { ...h.values.consumer, waitSeconds: 20 } },
+  });
+  let url: string | undefined;
+  let observer: LoadEventObserver | undefined;
+  let uowRuns = 0;
+  try {
+    url = (
+      await transport.client.send(
+        new CreateQueueCommand({
+          QueueName: queue,
+          Attributes: { FifoQueue: "true", ContentBasedDeduplication: "false" },
+        }),
+      )
+    ).QueueUrl;
+    await h.open.handle({
+      playerId: randomUUID(),
+      initialBalance: { amount: "100.00", currency: "BRL" },
+      correlationId: randomUUID(),
+    });
+    const connection = (await h.database.orm).em.getConnection();
+    const rows = await connection.execute<{ id: string; payload: Record<string, unknown> }[]>(
+      "SELECT id,payload FROM outbox_messages ORDER BY id",
+    );
+    expect(rows).toHaveLength(2);
+    const row = rows[0];
+    if (!row) throw new Error("Missing event");
+    observer = new LoadEventObserver(
+      {
+        run: (work) => {
+          uowRuns++;
+          return h.uow.run(work);
+        },
+      },
+      transport,
+      "load-observer-ack",
+    );
+    await observer.start();
+    const initializedRuns = uowRuns;
+    await transport.send(QUEUES.events, JSON.stringify(row.payload), "ack-gate", randomUUID());
+    await pollUntil("second event ACK attempt entered", async () => secondAckEntered, 10_000);
+    expect(ackCalls).toBe(2);
+    expect(deleted).toBe(0);
+    expect(uowRuns - initializedRuns).toBe(1);
+    const committed = () =>
+      connection.execute<{ effects: number; inbox: number; processed: number }[]>(
+        `SELECT
+          (SELECT count(*)::int FROM test_event_effects WHERE consumer_name=? AND event_id=?) AS effects,
+          (SELECT count(*)::int FROM inbox_messages WHERE consumer_name=? AND message_id=?) AS inbox,
+          (SELECT count(*)::int FROM inbox_messages WHERE consumer_name=? AND message_id=? AND processed_at IS NOT NULL) AS processed`,
+        ["load-observer-ack", row.id, "load-observer-ack", row.id, "load-observer-ack", row.id],
+      );
+    expect(await committed()).toEqual([{ effects: 1, inbox: 1, processed: 1 }]);
+    expect(observer.snapshot()).toEqual({
+      deliveries: 0,
+      distinctAcknowledged: 0,
+      duplicates: 0,
+      activeHandlers: 1,
+    });
+    const stop = observer.stop().then((state) => {
+      order.push("stop");
+      return state;
+    });
+    ackRelease.resolve();
+    expect(await stop).toEqual({
+      deliveries: 1,
+      distinctAcknowledged: 1,
+      duplicates: 0,
+      activeHandlers: 0,
+    });
+    expect(order).toEqual(["delete", "stop"]);
+    expect(ackCalls).toBe(2);
+    expect(deleted).toBe(1);
+    expect(uowRuns - initializedRuns).toBe(1);
+    expect(await committed()).toEqual([{ effects: 1, inbox: 1, processed: 1 }]);
+    await pollUntil(
+      "real isolated event queue empty after ACK",
+      async () => {
+        const { Attributes } = await transport.client.send(
+          new GetQueueAttributesCommand({
+            QueueUrl: url,
+            AttributeNames: [
+              "ApproximateNumberOfMessages",
+              "ApproximateNumberOfMessagesNotVisible",
+            ],
+          }),
+        );
+        return (
+          Attributes?.ApproximateNumberOfMessages === "0" &&
+          Attributes?.ApproximateNumberOfMessagesNotVisible === "0"
+        );
+      },
+      5000,
+    );
+  } finally {
+    ackRelease.resolve();
+    try {
+      await observer?.stop();
+    } finally {
+      try {
+        if (url) await transport.client.send(new DeleteQueueCommand({ QueueUrl: url }));
+      } finally {
+        transport.close();
+        try {
+          await assertLedgerInvariant(h.database);
+        } finally {
+          await fixture.cleanup();
+        }
+      }
+    }
+  }
+}, 30_000);
