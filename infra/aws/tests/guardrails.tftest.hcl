@@ -22,7 +22,7 @@ variables {
   database_version   = "17.11"
   source_commit      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   session_started_at = "2026-11-01T00:00:00Z"
-  stop_at            = "2026-11-01T04:30:00Z"
+  stop_at            = "2026-11-01T05:50:00Z"
   client_secrets     = { PROVIDER_A_SECRET = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PROVIDER_B_SECRET = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", OPERATOR_SECRET = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
 }
 
@@ -37,12 +37,24 @@ run "private_and_stopped_until_verified" {
     error_message = "Sizes must stay within D26."
   }
   assert {
-    condition     = length(aws_vpc_endpoint.interface) == 8 && length(aws_scheduler_schedule.stop) == 6 && alltrue([for schedule in aws_scheduler_schedule.stop : schedule.schedule_expression == "at(2026-11-01T04:30:00)" && schedule.state == "ENABLED"])
+    condition     = length(aws_vpc_endpoint.interface) == 8 && length(aws_scheduler_schedule.stop) == 6 && alltrue([for schedule in aws_scheduler_schedule.stop : schedule.schedule_expression == "at(2026-11-01T05:50:00)" && schedule.state == "ENABLED"])
     error_message = "Eight private endpoints and all six fixed-deadline stops are mandatory."
   }
   assert {
-    condition     = toset(jsondecode(aws_iam_role_policy.task["api"].policy).Statement[0].Action) == toset(["sqs:GetQueueUrl", "sqs:GetQueueAttributes"]) && length(jsondecode(aws_iam_role_policy.task["api"].policy).Statement) == 1
+    condition     = aws_scheduler_schedule.stop["database"].target[0].arn == "arn:aws:scheduler:::aws-sdk:rds:stopDBInstance" && toset(keys(jsondecode(aws_scheduler_schedule.stop["database"].target[0].input))) == toset(["DbInstanceIdentifier"]) && jsondecode(aws_scheduler_schedule.stop["database"].target[0].input).DbInstanceIdentifier == aws_db_instance.load.identifier
+    error_message = "The RDS universal target must use its exact SDK input key."
+  }
+  assert {
+    condition     = aws_sqs_queue.events.deduplication_scope == "messageGroup" && aws_sqs_queue.events.fifo_throughput_limit == "perMessageGroupId"
+    error_message = "The events FIFO queue must retain the observed high-throughput configuration."
+  }
+  assert {
+    condition     = toset(jsondecode(aws_iam_role_policy.task["api"].policy).Statement[0].Action) == toset(["sqs:GetQueueUrl", "sqs:GetQueueAttributes"]) && length(jsondecode(aws_iam_role_policy.task["api"].policy).Statement) == 1 && toset(jsondecode(aws_iam_role_policy.task["api"].policy).Statement[0].Resource) == toset(local.queue_arns)
     error_message = "API permissions must remain metadata-only."
+  }
+  assert {
+    condition     = length([for statement in jsondecode(aws_iam_role_policy.runner.policy).Statement : statement if contains(statement.Action, "sqs:SendMessage")]) == 1 && one([for statement in jsondecode(aws_iam_role_policy.runner.policy).Statement : statement.Resource if contains(statement.Action, "sqs:SendMessage")]) == aws_sqs_queue.requests.arn
+    error_message = "The runner must not retain the temporary events SendMessage grant."
   }
   assert {
     condition     = aws_lb_listener.http.default_action[0].type == "fixed-response" && alltrue([for rule in aws_lb_listener_rule.business : !contains(one(rule.condition).path_pattern[0].values, "/metrics")])
@@ -59,6 +71,25 @@ run "refuse_unverified_start" {
 run "refuse_extended_cumulative_deadline" {
   command = plan
   variables { previous_runtime_seconds = 60 }
+  expect_failures = [var.stop_at]
+}
+
+run "accept_cumulative_350_minute_boundary" {
+  command = plan
+  variables {
+    session_started_at       = "2026-11-02T02:30:11Z"
+    previous_runtime_seconds = 5227
+    stop_at                  = "2026-11-02T06:53:04Z"
+  }
+}
+
+run "refuse_cumulative_350_minute_boundary_plus_one_second" {
+  command = plan
+  variables {
+    session_started_at       = "2026-11-02T02:30:11Z"
+    previous_runtime_seconds = 5227
+    stop_at                  = "2026-11-02T06:53:05Z"
+  }
   expect_failures = [var.stop_at]
 }
 
