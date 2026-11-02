@@ -571,7 +571,7 @@ um FULL reprovado, e a dependência de aprovação do predecessor impediu FULL2,
 FULL3 e patamares. Não se iniciou uma terceira sessão ou retry de rodada para
 escolher resultado favorável. Não há capacidade sustentada AWS medida.
 
-O orçamento autorizado foi US$ 10. A leitura do Budgets às **06:32:53 UTC de
+O orçamento autorizado foi US$ 10. A leitura do Budgets às **07:26:45.460 UTC de
 02/11/2026** confirmou um orçamento mensal de US$ 10, sem filtro de projeto,
 com créditos excluídos, e valor reportado de US$ 0. O atraso dessa informação
 é desconhecido: **custo final faturado e saldo real permanecem indisponíveis**.
