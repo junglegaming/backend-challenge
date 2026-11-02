@@ -1,767 +1,431 @@
-# Technical Challenge — Distributed Wagering Processor
+# Distributed Wagering Processor
 
-## Prevenção de vazamentos
+Processador financeiro de apostas com entrada HTTP e SQS, idempotência persistida e ledger auditável. HTTP e consumidor usam o mesmo caso de uso. PostgreSQL confirma inbox, transação, saldo, ledger e outbox em uma única transação; workers publicam os eventos após o commit.
 
-Para examinar todo o histórico sem instalar Gitleaks, execute na raiz do clone:
+A implementação usa Bun, TypeScript, NestJS/Fastify, MikroORM e PostgreSQL. O ambiente local inclui MiniStack para SQS e Keycloak para autenticação entre serviços. A coordenação ocorre no banco: o mesmo código funciona com várias APIs, consumers e workers.
+
+- [Arquitetura, decisões e contratos](ARCHITECTURE.md)
+- [Testes, cenários obrigatórios e reprodução das evidências](docs/verification.md)
+- [Metodologia, resultados e limites do teste de carga](docs/load-test.md)
+- [Relatório visual offline](docs/load-report/index.html)
+
+## Começar
+
+Requisitos do host: **Bun 1.4.3** e **Docker com o plugin Docker Compose**. Não é necessário instalar Node, npm, PostgreSQL, AWS CLI, k6 ou Toxiproxy. Execute os comandos na raiz do repositório. Os exemplos de terminal usam Bash; os comandos de aplicação usam Bun.
+
+As imagens e dependências estão fixadas em [compose.yaml](compose.yaml), [Dockerfile](Dockerfile), [package.json](package.json) e `bun.lock`. O primeiro início precisa de rede para baixar imagens e pacotes.
+
+Para uma stack local nova, gere credenciais de demonstração na sessão atual, sem imprimi-las:
 
 ```bash
-docker run --rm --network none -v "$PWD:/repo:ro" -w /repo \
-  -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-  ghcr.io/gitleaks/gitleaks:v8.30.1 git . --log-opts=--all --redact --no-banner
+set -euo pipefail
+export BUN_CONFIG_NO_ENV_FILE=true
+bun install --frozen-lockfile
+OPERATOR_SECRET="$(bun -e 'process.stdout.write(crypto.randomUUID())')"
+PROVIDER_A_SECRET="$(bun -e 'process.stdout.write(crypto.randomUUID())')"
+PROVIDER_B_SECRET="$(bun -e 'process.stdout.write(crypto.randomUUID())')"
+export OPERATOR_SECRET PROVIDER_A_SECRET PROVIDER_B_SECRET
+export COMPOSE_PROFILES=observability
+export API_REPLICAS=3 CONSUMER_REPLICAS=3 WORKER_REPLICAS=2
+bun run stack:up
 ```
 
-Troque `git . --log-opts=--all` por `dir .` para examinar a árvore atual. A configuração estende as regras padrão
-e permite apenas quatro valores públicos exatos usados no Compose local. O scan de todo o histórico no CI está previsto para a Task 13. Quem já tem Lefthook e Gitleaks pode executar `lefthook install` para ativar a inspeção
-das mudanças staged antes de cada commit. Esses utilitários não são dependências dos testes.
-Arquivos de ignore evitam inclusão acidental; não controlam o acesso de agentes ao filesystem.
+Mantenha essas variáveis na sessão para obter tokens e recriar o Keycloak com as mesmas credenciais. Se a stack já existe, use os valores com que ela foi iniciada; gerar outros valores não altera um realm já importado. O Compose também contém defaults públicos exclusivos de desenvolvimento. Não crie arquivo `.env`: os wrappers passam `--env-file /dev/null` ao Compose.
 
-## Relatório de carga
+O projeto local se chama `wagering`. O roteiro acima sobe três APIs, três consumers, dois workers e observabilidade. Sem as variáveis de escala, o wrapper usa uma API, um consumer e um worker. O serviço `bootstrap` aplica migrations e cria as três filas automaticamente antes de iniciar a aplicação.
 
-O [relatório visual offline](docs/load-report/index.html) apresenta uma rodada AWS QUICK
-diagnóstica aprovada. As duas execuções FULL selecionadas, local e AWS, foram reprovadas
-e estão excluídas dos gráficos; o [registro de carga](docs/load-test.md) preserva seus resultados.
-
-## Bem-vindo à Jungle Gaming 🦧
-
-A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.
-
-Este desafio é a porta de entrada para fazer parte desse time. Ele foi desenhado para refletir problemas reais do nosso dia a dia: sistemas distribuídos, tempo real, precisão monetária, experiência de usuário e arquitetura bem pensada.
-
-Não esperamos perfeição — esperamos raciocínio claro, código limpo e decisões justificadas. Mostre como você pensa e como você constrói.
-
----
-
-## 1. Visão geral
-
-Construa um serviço financeiro distribuído que processe transações de apostas recebidas de múltiplos provedores de jogos.
-
-Este desafio **não** avalia CRUD nem familiaridade superficial com NestJS. A avaliação é centrada em:
-
-- correção financeira;
-- concorrência entre múltiplas instâncias;
-- idempotência persistente;
-- consistência entre saldo materializado e ledger;
-- processamento assíncrono e recuperação após falhas;
-- clareza das decisões técnicas.
-
-O sistema deve permanecer correto quando mensagens forem **duplicadas**, entregues **fora de ordem** ou processadas **simultaneamente**.
-
----
-
-## 2. Autenticação — a cargo do candidato
-
-Esta seção vem antes do resto justamente para você dimensionar o timebox: **autenticação não vale pontos** na tabela de avaliação (seção 14) e não deve competir com correção financeira, concorrência e idempotência. O desafio **não prescreve** um mecanismo — a escolha, o desenho e a implementação são de sua responsabilidade, e serão discutidos na apresentação.
-
-Se você implementar, a expectativa é **integrar um Identity Provider externo**, não escrever autenticação artesanal. Nada de tabela própria de usuários com hash de senha. Sugestões que sobem bem em Docker Compose:
-
-**Keycloak** (mais comum no mercado, OIDC completo) e **Zitadel** (mais leve, API-first) são pontos de partida razoáveis; qualquer IdP equivalente serve.
-
-Se você optar por **não** implementar, isso é aceito: documente a decisão no `ARCHITECTURE.md`, descreva o desenho que adotaria e deixe o ponto de extensão explícito no código (por exemplo um `AuthGuard` no-op ou um `ProviderIdentityPort`).
-
-Escopo do que a autenticação **não** cobre neste desafio: os endpoints de health ficam abertos, e mensagens vindas da fila são tratadas como canal interno confiável — mas a identidade do provedor contida na mensagem continua sujeita às mesmas validações de domínio.
-
----
-
-## 3. Contexto do domínio
-
-Provedores enviam operações associadas a uma rodada:
-
-```
-BET → WIN | LOSS | REFUND | ROLLBACK
+```bash
+bun --no-env-file -e 'const r=await fetch("http://127.0.0.1:3000/health/ready"); if(r.status!==200) throw new Error("Readiness failed"); console.log(JSON.stringify({ready:true,httpStatus:r.status}));'
 ```
 
-A entrega é **at-least-once**. Portanto assuma que:
+| Serviço | Endereço local | Ativação |
+| --- | --- | --- |
+| API por Nginx | `http://127.0.0.1:3000` | padrão |
+| Keycloak | `http://127.0.0.1:8080` | padrão |
+| PostgreSQL | porta `5432` | padrão |
+| MiniStack/SQS | `http://127.0.0.1:4566` | padrão |
+| Prometheus | `http://127.0.0.1:9090` | profile `observability` |
+| Grafana | `http://127.0.0.1:3001` | profile `observability` |
+| Toxiproxy | `http://127.0.0.1:8474` | profile `chaos`, usado pelos testes de falha |
 
-- a mesma operação pode chegar várias vezes;
-- uma operação dependente pode chegar antes da operação referenciada;
-- várias instâncias podem tocar a mesma wallet ao mesmo tempo;
-- o processo pode morrer antes ou depois do commit;
-- eventos podem ser publicados mais de uma vez;
-- PostgreSQL e SQS podem ficar temporariamente indisponíveis.
+As réplicas não publicam portas individuais. O Nginx é a entrada HTTP e descobre as APIs pelo DNS do Docker. Para mudar a escala, ajuste `API_REPLICAS`, `CONSUMER_REPLICAS` e `WORKER_REPLICAS` e repita o mesmo `stack:up`. Essas variáveis são interpretadas pelo wrapper; a opção correspondente do Compose direto é `--scale`, não uma variável do YAML.
 
-**Invariantes globais:** o sistema não pode duplicar créditos, duplicar débitos, perder eventos confirmados ou permitir saldo negativo.
+## Autenticar e chamar a API
 
----
+O realm `wagering` usa OAuth 2.0 `client_credentials`. `platform-operator` recebe `wallets.admin` para abrir/consultar wallets, ledger e reconciliação. `provider-a` e `provider-b` recebem `wagering`; o claim `provider_id` restringe cada provedor às suas operações. A API valida assinatura RS256, issuer, audience `wagering-api` e expiração. Não há login de jogador.
 
-## 4. Stack
+Os exemplos curl usam a imagem opcional existente, para manter o roteiro sem instalação de curl no host:
 
-### Obrigatória
-
-| Item | Escolha |
-|---|---|
-| Runtime / package manager / test runner | **Bun 1.x** |
-| Linguagem | **TypeScript** em modo estrito |
-| Framework | **NestJS** |
-| Banco | **PostgreSQL** |
-| Mensageria | **AWS SQS** via **LocalStack** ou **MiniStack** |
-| Orquestração local | **Docker Compose** |
-| Migrations | versionadas e reversíveis |
-
-### ORM
-
-Use **uma** das opções:
-
-- **MikroORM — preferencial** (Unit of Work e Identity Map explícitos, `EntityManager.transactional()`, `LockMode`);
-- **TypeORM** — aceito.
-
-**Prisma e outros ORMs estão fora do escopo.** A escolha, o mapeamento do `Money` e a estratégia transacional adotada devem ser justificados em `ARCHITECTURE.md`.
-
-## 5. Restrições invioláveis
-
-1. Não usar `number`, `float` ou `double` para dinheiro.
-2. Não usar cache em memória como garantia de idempotência.
-3. Não confiar apenas em SQS FIFO para garantir consistência.
-4. Não publicar eventos antes do commit da transação financeira.
-5. Não sobrescrever nem excluir lançamentos do ledger.
-6. Não usar lock global compartilhado por todas as wallets.
-7. Não implementar saldo como `read → calculate → update` sem controle de concorrência.
-8. A solução deve estar correta com **múltiplas instâncias** da aplicação.
-9. As garantias de unicidade, imutabilidade e não-negatividade descritas na seção 6 devem ser aplicadas **no schema do banco**, não apenas em código de aplicação. O desenho do schema, das constraints e dos índices é parte do que está sendo avaliado.
-
----
-
-## 6. Modelo de domínio
-
-Nomes e assinaturas podem ser adaptados, desde que as garantias sejam preservadas.
-
-### 6.0 Regra de modelagem
-
-- Construtor `private` ou `protected` + **factories estáticas** (`create`, `from`, `rehydrate`);
-- a reidratação a partir do banco usa a factory `rehydrate`, que **não** revalida regras de transição — apenas reconstrói estado já persistido.
-
-Os blocos abaixo são **esqueletos de referência**: o que importa é que o estado seja encapsulado e as transições sejam explícitas.
-
-### 6.1 Money
-
-```ts
-// DTO — interface é adequada aqui
-interface MoneyProps {
-  amount: string;   // decimal string, ex.: "25.00"
-  currency: string; // ISO-4217
+```bash
+docker compose --env-file /dev/null -p wagering --profile verification build verification-tools
+curl_local() {
+  docker compose --env-file /dev/null -p wagering --profile verification run --rm --no-deps -T --entrypoint curl verification-tools "$@"
 }
-
-class Money {
-  private constructor(
-    private readonly value: Decimal,
-    public readonly currency: string,
-  ) {}
-
-  static from(props: MoneyProps): Money;
-  static zero(currency: string): Money;
-
-  add(other: Money): Money;
-  subtract(other: Money): Money;
-  negate(): Money;
-
-  isZero(): boolean;
-  isPositive(): boolean;
-  isNegative(): boolean;
-  isLessThan(other: Money): boolean;
-  equals(other: Money): boolean;
-
-  toJSON(): MoneyProps;
-  toString(): string;
-
-  private assertSameCurrency(other: Money): void;
+curl_json() {
+  local expected="$1"
+  shift
+  curl_local -fsS --write-out '\n%{http_code}' "$@" \
+    | EXPECTED_HTTP_STATUS="$expected" bun --no-env-file -e '
+      const raw=await Bun.stdin.text();
+      const boundary=raw.lastIndexOf("\n");
+      const httpStatus=raw.slice(boundary+1);
+      if(boundary<0 || httpStatus!==process.env.EXPECTED_HTTP_STATUS) throw new Error("Unexpected HTTP status");
+      const body=JSON.parse(raw.slice(0,boundary));
+      process.stdout.write(JSON.stringify({httpStatus,body}));
+    '
 }
 ```
 
-`Money` é **imutável**: toda operação retorna uma nova instância.
+A opção containerizada usa rede host e o perfil de ferramentas monta o socket Docker; destina-se ao daemon local em Linux. Outros sistemas/daemons remotos não têm validação deste roteiro. Isso não é requisito dos testes obrigatórios. Quem já possui curl pode fazer as mesmas chamadas diretamente no host. `curl_json` conserva status e corpo em memória e exige o código HTTP indicado. Os exemplos seguintes usam apenas dados sintéticos; retenha somente os resumos, sem tokens, headers nem corpos financeiros completos.
 
-Regras:
+Após preparar a imagem de ferramentas, na mesma sessão do setup, obtenha os tokens com Bun. Assim, o tempo do primeiro build não consome a validade dos tokens. A função escreve o token somente no stdout capturado pela atribuição; não use `set -x`, `echo` de tokens ou `curl -v`:
 
-- `amount` é **recebido e serializado como string decimal**, sempre com escala fixa de **2** casas;
-- operações entre moedas diferentes lançam erro de domínio;
-- entradas inválidas são rejeitadas: `NaN`, `Infinity`, notação científica, string vazia, mais de 2 casas decimais, valores negativos em contratos de entrada;
-- o domínio **não** depende de tipos monetários do ORM nem de decorators do NestJS;
-- na persistência, valor e moeda podem ocupar colunas separadas, desde que a representação seja exata e reidratada como `Money`.
-
-Para reduzir escopo, **todo o desafio pode assumir uma única moeda (`BRL`)**, desde que o modelo continue multi-moeda e os conflitos de moeda sejam testados.
-
-Formato nos contratos:
-
-```json
-{ "amount": "25.00", "currency": "BRL" }
-```
-
-### 6.2 Wallet (Aggregate Root)
-
-```ts
-class Wallet {
-  private constructor(
-    public readonly id: string,
-    public readonly playerId: string,
-    public readonly currency: string,
-    private _balance: Money,
-    private _version: number,
-    public readonly createdAt: Date,
-    private _updatedAt: Date,
-  ) {}
-
-  static open(props: {
-    id: string;
-    playerId: string;
-    initialBalance: Money;
-  }): Wallet;
-
-  /** Reconstrução a partir da persistência — não revalida transições. */
-  static rehydrate(state: WalletState): Wallet;
-
-  get balance(): Money { return this._balance; }
-  get version(): number { return this._version; }
-  get updatedAt(): Date { return this._updatedAt; }
-
-  // Aplicam a movimentação mantendo saldo e ledger consistentes entre si.
-  // Assinatura e retorno são decisão sua.
-  debit(/* ... */): /* ... */;
-  credit(/* ... */): /* ... */;
-
-  private assertSameCurrency(money: Money): void;
+```bash
+token() {
+  CLIENT_ID="$1" CLIENT_SECRET="$2" bun --no-env-file -e '
+    const response = await fetch("http://127.0.0.1:8080/realms/wagering/protocol/openid-connect/token", {
+      method: "POST",
+      body: new URLSearchParams({ grant_type: "client_credentials", client_id: process.env.CLIENT_ID, client_secret: process.env.CLIENT_SECRET }),
+    });
+    if (response.status!==200) throw new Error(`Token request failed: HTTP ${response.status}`);
+    const body = await response.json();
+    if (typeof body.access_token !== "string") throw new Error("Missing access token");
+    process.stdout.write(body.access_token);
+  '
 }
+OPERATOR_TOKEN="$(token platform-operator "$OPERATOR_SECRET")"
+PROVIDER_TOKEN="$(token provider-a "$PROVIDER_A_SECRET")"
+export OPERATOR_TOKEN PROVIDER_TOKEN
 ```
 
-Invariantes:
+Crie uma wallet de `100.00 BRL` e capture seu ID:
 
-- no máximo **uma wallet por `playerId` + `currency`**;
-- saldo nunca negativo;
-- **toda alteração de saldo tem um lançamento correspondente no ledger** (e vice-versa);
-- operações concorrentes não podem causar lost update;
-- a moeda da operação deve ser igual à moeda da wallet;
-- `version` inicia em `1` após a criação e **incrementa somente quando o saldo muda**.
-
-`version` é sugerido para optimistic locking, mas outra estratégia é aceita se justificada.
-
-### 6.3 WagerTransaction
-
-```ts
-enum WagerTransactionKind {
-  Opening  = "OPENING",   // interno: crédito de abertura da wallet
-  Bet      = "BET",
-  Win      = "WIN",
-  Loss     = "LOSS",
-  Refund   = "REFUND",
-  Rollback = "ROLLBACK",
+```bash
+PLAYER_ID="$(bun --no-env-file -e 'process.stdout.write(crypto.randomUUID())')"
+export PLAYER_ID
+WALLET_ID="$(curl_json 201 -X POST http://127.0.0.1:3000/wallets \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" -H 'Content-Type: application/json' \
+  --data "{\"playerId\":\"$PLAYER_ID\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}" \
+  | bun --no-env-file -e 'const {httpStatus,body:w}=await Bun.stdin.json(); if(httpStatus!=="201"||typeof w.id!=="string"||w.playerId!==process.env.PLAYER_ID||w.balance?.amount!=="100.00"||w.balance?.currency!=="BRL") throw new Error("Unexpected wallet result"); process.stdout.write(w.id)')"
+export WALLET_ID
+EXTERNAL_ID="$(bun --no-env-file -e 'process.stdout.write(crypto.randomUUID())')"
+export EXTERNAL_ID
+export IDEMPOTENCY_KEY="provider-a:$EXTERNAL_ID"
+WAGER_BODY="$(bun --no-env-file -e 'process.stdout.write(JSON.stringify({providerId:"provider-a",externalTransactionId:process.env.EXTERNAL_ID,playerId:process.env.PLAYER_ID,walletId:process.env.WALLET_ID,roundId:"demo-round",gameId:"demo-game",kind:"BET",money:{amount:"10.00",currency:"BRL"}}))')"
+submit_bet() {
+  curl_json 200 -X POST http://127.0.0.1:3000/wagering/transactions \
+    -H "Authorization: Bearer $PROVIDER_TOKEN" -H 'Content-Type: application/json' \
+    -H "Idempotency-Key: $IDEMPOTENCY_KEY" --data "$WAGER_BODY"
 }
-
-enum WagerTransactionStatus {
-  Pending          = "PENDING",            // aceita, ainda não aplicada
-  PendingReference = "PENDING_REFERENCE",  // aguardando a transação referenciada
-  Processed        = "PROCESSED",          // aplicada (terminal)
-  Rejected         = "REJECTED",           // violação de regra de negócio (terminal)
-  Failed           = "FAILED",             // erro permanente de infraestrutura (terminal, auditável)
-}
-
-class WagerTransaction {
-  private constructor(
-    public readonly id: string,
-    public readonly providerId: string,
-    public readonly externalTransactionId: string,
-    public readonly idempotencyKey: string,
-    public readonly payloadHash: string,
-    public readonly walletId: string,
-    public readonly playerId: string,
-    public readonly roundId: string,
-    public readonly gameId: string,
-    public readonly kind: WagerTransactionKind,
-    public readonly money: Money,
-    /** id no provedor — não o id interno */
-    public readonly referenceExternalTransactionId: string | undefined,
-    public readonly createdAt: Date,
-    private _status: WagerTransactionStatus,
-    private _referenceTransactionId?: string,
-    private _failureCode?: FailureCode,
-    private _processedAt?: Date,
-  ) {}
-
-  /** Nasce em PENDING. Valida a exigência de referência por kind. */
-  static create(props: CreateWagerTransactionProps): WagerTransaction;
-  static rehydrate(state: WagerTransactionState): WagerTransaction;
-
-  get status(): WagerTransactionStatus { return this._status; }
-  get referenceTransactionId(): string | undefined { return this._referenceTransactionId; }
-  get failureCode(): FailureCode | undefined { return this._failureCode; }
-  get processedAt(): Date | undefined { return this._processedAt; }
-
-  // ---- transições (lançam InvalidTransactionStateError se o estado atual for terminal)
-  markProcessed(referenceTransactionId: string | undefined, at: Date): void;
-  markPendingReference(): void;
-  reject(code: FailureCode): void;
-  fail(code: FailureCode): void;
-
-  // ---- consultas de domínio
-  isTerminal(): boolean;
-  affectsBalance(): boolean;      // false para LOSS
-  requiresReference(): boolean;   // true para REFUND e ROLLBACK
-  matchesPayload(payloadHash: string): boolean;
-  ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection;
-}
+BET_RESULT="$(submit_bet)"
+REPLAY_RESULT="$(submit_bet)"
+printf '%s\n%s\n' "$BET_RESULT" "$REPLAY_RESULT" | bun --no-env-file -e '
+  const [firstResponse,replayResponse]=(await Bun.stdin.text()).trim().split("\n").map(line=>JSON.parse(line));
+  const first=firstResponse.body, replay=replayResponse.body;
+  if(firstResponse.httpStatus!=="200"||replayResponse.httpStatus!=="200"||first.status!=="PROCESSED"||replay.status!=="PROCESSED"||first.idempotentReplay!==false||replay.idempotentReplay!==true||typeof first.transactionId!=="string"||first.transactionId!==replay.transactionId||first.balance?.amount!=="90.00"||replay.balance?.amount!=="90.00"||first.balance?.currency!=="BRL"||replay.balance?.currency!=="BRL") throw new Error("Unexpected bet/replay result");
+  console.log(JSON.stringify({walletHttpStatus:201,betHttpStatus:firstResponse.httpStatus,replayHttpStatus:replayResponse.httpStatus,processed:true,replayed:true,sameTransaction:true}));
+'
 ```
 
-`PROCESSED`, `REJECTED` e `FAILED` são **terminais**: uma transação que chegou a um deles não muda mais de estado, e tentar transicioná-la é erro de programação, não caminho de negócio. Defina e documente as transições válidas.
+A criação retorna `201`. A aposta retorna `200`, `status: PROCESSED`, saldo `90.00` e `idempotentReplay: false`. O roteiro repete a chamada com a mesma chave e o mesmo corpo e compara as respostas em memória: a transação e o saldo observado permanecem, com `idempotentReplay: true`. Uma chave reutilizada com outro payload gera conflito. Esses são resultados esperados do roteiro; a execução literal no clone de entrega ainda precisa de registro próprio.
 
-- `OPENING` é **interno**: não pode ser submetido pela API nem pela fila.
-- A mesma idempotency key com payload diferente é **conflito**, não replay.
-
-### 6.4 WalletLedgerEntry (imutável)
-
-```ts
-enum LedgerDirection { Debit = "DEBIT", Credit = "CREDIT" }
-
-class WalletLedgerEntry {
-  private constructor(
-    public readonly id: string,
-    public readonly walletId: string,
-    public readonly transactionId: string,
-    public readonly direction: LedgerDirection,
-    public readonly money: Money,
-    public readonly balanceBefore: Money,
-    public readonly balanceAfter: Money,
-    public readonly createdAt: Date,
-  ) {}
-
-  static create(props: CreateLedgerEntryProps): WalletLedgerEntry;
-  static rehydrate(state: LedgerEntryState): WalletLedgerEntry;
-
-  /** balanceBefore ± money === balanceAfter. Verificada na factory. */
-  isBalanced(): boolean;
-}
+```bash
+curl_json 200 "http://127.0.0.1:3000/wallets/$WALLET_ID" -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  | bun --no-env-file -e 'const {httpStatus,body:w}=await Bun.stdin.json(); if(w.id!==process.env.WALLET_ID||w.balance?.amount!=="90.00"||w.balance?.currency!=="BRL") throw new Error("Unexpected wallet balance"); console.log(JSON.stringify({httpStatus,walletChecked:true}));'
+curl_json 200 "http://127.0.0.1:3000/wallets/$WALLET_ID/ledger?limit=50" -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  | bun --no-env-file -e 'const {httpStatus,body:l}=await Bun.stdin.json(); if(!Array.isArray(l.items)||l.items.length!==2) throw new Error("Unexpected ledger"); console.log(JSON.stringify({httpStatus,ledgerEntries:l.items.length}));'
+curl_json 200 -X POST "http://127.0.0.1:3000/wallets/$WALLET_ID/reconciliation" -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  | bun --no-env-file -e 'const {httpStatus,body:r}=await Bun.stdin.json(); if(r.walletId!==process.env.WALLET_ID||r.consistent!==true||r.storedBalance?.amount!=="90.00"||r.calculatedBalance?.amount!=="90.00"||r.difference?.amount!=="0.00"||r.checkedEntries!==2) throw new Error("Reconciliation failed"); console.log(JSON.stringify({httpStatus,consistent:r.consistent,checkedEntries:r.checkedEntries}));'
+curl_json 200 "http://127.0.0.1:3000/providers/provider-a/wagering/transactions/$EXTERNAL_ID" -H "Authorization: Bearer $PROVIDER_TOKEN" \
+  | bun --no-env-file -e 'const {httpStatus,body:t}=await Bun.stdin.json(); if(t.externalTransactionId!==process.env.EXTERNAL_ID||t.walletId!==process.env.WALLET_ID||t.status!=="PROCESSED") throw new Error("Unexpected transaction status"); console.log(JSON.stringify({httpStatus,transactionFound:true,status:t.status}));'
 ```
 
-**Sem campos mutáveis e sem métodos de transição** — a imutabilidade é estrutural, não uma convenção. `create` valida a aritmética do lançamento.
+O ledger retorna `items` e `nextCursor`; envie o cursor recebido na próxima consulta, sem construí-lo manualmente. O limite máximo é 100. A reconciliação compara o saldo persistido com o reconstruído pelo ledger e retorna `consistent`; divergências são sinalizadas e contabilizadas, sem correção silenciosa. Há também `GET /wagering/transactions/:transactionId`.
 
-- Uma transação financeira produz **no máximo um lançamento por wallet**.
-- Operações sem efeito no saldo (`LOSS`, e qualquer transação `REJECTED`) **não geram lançamento**.
-- Ledger de **partidas dobradas** (*double-entry bookkeeping*) é diferencial opcional, não requisito.
+Valores monetários são strings com exatamente duas casas e moeda de três letras maiúsculas, por exemplo `{"amount":"10.00","currency":"BRL"}`. São rejeitados números JSON, notação científica, arredondamento implícito e zeros iniciais excedentes. `BET`, `WIN`, `REFUND` e `ROLLBACK` exigem valor positivo; `LOSS` pode ser zero e não altera saldo. `REFUND` e `ROLLBACK` exigem `referenceExternalTransactionId`.
 
-### 6.5 Inbox e Outbox
+| HTTP | Significado / ação |
+| --- | --- |
+| `200` | Transação processada; replay retorna o resultado persistido |
+| `202` | `PENDING_REFERENCE`; consultar o estado posteriormente |
+| `400` | Payload/header inválido |
+| `401` / `403` | Token inválido / scope ou provedor incompatível |
+| `404` | Recurso consultado não encontrado |
+| `409` | Identidade em conflito, ou wallet duplicada por jogador/moeda |
+| `422` | Rejeição de negócio persistida, com `failureCode` |
+| `500` | Resultado financeiro `FAILED` por erro permanente registrado |
+| `503` | Indisponibilidade transitória; `Retry-After: 1`, reenviar a mesma chave/corpo |
 
-```ts
-class InboxMessage {
-  private constructor(
-    public readonly messageId: string,
-    public readonly consumerName: string,
-    public readonly payloadHash: string,
-    public readonly receivedAt: Date,
-    private _processedAt?: Date,
-  ) {}
+Um `502` do gateway também exige preservar a identidade da tentativa: a resposta não prova ausência de commit. Os detalhes dos códigos de negócio e das decisões de referência/reversão estão em [ARCHITECTURE.md](ARCHITECTURE.md). Renove os tokens quando expirarem.
 
-  static receive(props: ReceiveInboxProps): InboxMessage;
-  static rehydrate(state: InboxMessageState): InboxMessage;
+## Enviar uma operação por SQS
 
-  get processedAt(): Date | undefined { return this._processedAt; }
+As filas criadas pelo bootstrap são `wager-transactions.fifo` (entrada), `wager-transactions-dlq.fifo` (DLQ) e `wagering-events.fifo` (eventos do outbox). O consumidor reutiliza o caso de uso HTTP e confirma a mensagem somente depois do commit.
 
-  isProcessed(): boolean;
-  markProcessed(at: Date): void;
-}
+Com a wallet do exemplo anterior já reconciliada em `90.00`, envie outra aposta de `10.00`, com identidades novas. O envelope é gerado por Bun e segue por stdin; não é necessário AWS CLI nem arquivo de payload. O mesmo processo que envia conserva a identidade e aguarda a conclusão SQL usando o `pollUntil` já existente. A janela para iniciar observações é de 60 s, com limite de 2 s para cada leitura; a última leitura pode terminar até 2 s depois dessa janela. O intervalo do helper é somente a cadência de observação, não uma espera presumindo conclusão:
 
-class OutboxMessage {
-  private constructor(
-    public readonly id: string,
-    public readonly aggregateId: string,
-    public readonly eventType: string,
-    public readonly payload: Readonly<Record<string, unknown>>,
-    public readonly occurredAt: Date,
-    private _attempts: number,
-    private _nextAttemptAt?: Date,
-    private _publishedAt?: Date,
-  ) {}
-
-  static enqueue(event: IntegrationEvent<unknown>): OutboxMessage;
-  static rehydrate(state: OutboxMessageState): OutboxMessage;
-
-  get attempts(): number { return this._attempts; }
-  get nextAttemptAt(): Date | undefined { return this._nextAttemptAt; }
-  get publishedAt(): Date | undefined { return this._publishedAt; }
-
-  isPending(): boolean;
-  isDue(now: Date): boolean;
-  markPublished(at: Date): void;
-  /** incrementa attempts e calcula o próximo nextAttemptAt (backoff) */
-  scheduleRetry(now: Date): void;
-}
-```
-
-Inbox, alteração financeira, ledger e outbox participam da **mesma transação SQL**.
-
----
-
-## 7. Regras de negócio
-
-| Operação | Efeito no saldo | Ledger | Regra principal |
-|---|---|---|---|
-| `BET` | débito | 1 entrada `DEBIT` | rejeitar se saldo insuficiente |
-| `WIN` | crédito | 1 entrada `CREDIT` | pode referenciar a `BET` da mesma rodada |
-| `LOSS` | nenhum | nenhuma | registra o resultado sem mover saldo |
-| `REFUND` | crédito | 1 entrada `CREDIT` | reverte uma `BET` `PROCESSED`, uma única vez |
-| `ROLLBACK` | inverso da referência | 1 entrada invertida | reverte uma transação `PROCESSED`, uma única vez |
-
-Regras adicionais:
-
-1. `REFUND` e `ROLLBACK` exigem `referenceExternalTransactionId`.
-2. A referência é resolvida por `(providerId, referenceExternalTransactionId)` e deve pertencer ao **mesmo provider, player, wallet, moeda e rodada**.
-3. `REFUND` só referencia `BET`. `ROLLBACK` referencia `BET`, `WIN` ou `REFUND`.
-4. Uma referência não pode ser revertida duas vezes pelo mesmo tipo de operação.
-5. O valor de `REFUND`/`ROLLBACK` deve ser **igual** ao valor da referência (reversão parcial está fora de escopo).
-6. Transação `REJECTED` não altera saldo nem gera ledger.
-7. Repetir uma operação já processada retorna **o resultado original**, incluindo o saldo observado naquele momento.
-8. Referência ausente → persistir como `PENDING_REFERENCE` e reprocessar depois (ver 7.1).
-9. Reversão que produziria saldo negativo é **rejeitada explicitamente**, com um `failureCode` distinto do de uma aposta sem saldo — são situações operacionalmente diferentes — e permanece auditável.
-
-Qualquer interpretação adicional adotada deve ser documentada.
-
-### 7.1 Referências fora de ordem
-
-- Transações `PENDING_REFERENCE` são reprocessadas por um **worker agendado** com backoff exponencial.
-- Limite de tentativas ou TTL definido e justificado por você.
-- Esgotado o limite: `REJECTED` com um `failureCode` que identifique a referência inexistente, e evento correspondente publicado.
-
-### 7.2 Códigos de falha
-
-Toda rejeição precisa carregar um `failureCode` estável e legível por máquina, suficiente para o provedor decidir se reenvia, corrige o payload ou desiste. A taxonomia é sua — defina-a e documente-a.
-
----
-
-## 8. Concorrência e ordenação
-
-A **unidade de concorrência é a `walletId`**.
-
-A solução deve manter a correção quando:
-
-- duas apostas disputam o mesmo saldo;
-- múltiplos workers recebem operações da mesma wallet;
-- wallets diferentes são processadas em paralelo;
-- **três ou mais instâncias** rodam simultaneamente.
-
-A estratégia é sua escolha — pessimistic locking, optimistic locking com retry limitado, update atômico condicionado ou uma combinação — e deve ser justificada em `ARCHITECTURE.md`.
-
-Recursos de ordenação e deduplicação do broker são **otimização**, não a garantia final: o banco continua responsável pelas invariantes.
-
-### Cenário obrigatório
-
-Saldo inicial `100.00 BRL`. Duas apostas de `80.00 BRL` processadas simultaneamente.
-
-Resultado esperado:
-
-- exatamente uma aposta `PROCESSED`;
-- a outra `REJECTED` por saldo insuficiente;
-- saldo final `20.00 BRL`;
-- exatamente **um** lançamento de débito no ledger;
-- nenhum retry duplica o débito.
-
----
-
-## 9. API HTTP
-
-Autenticação dos endpoints abaixo: ver **seção 2**.
-
-### Criar wallet
-
-```http
-POST /wallets
-```
-
-```json
-{
-  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-  "initialBalance": { "amount": "1000.00", "currency": "BRL" }
-}
-```
-
-O saldo inicial, quando maior que zero, gera uma transação interna `OPENING` **na mesma transação SQL**, com lançamento `CREDIT` correspondente no ledger.
-
-```json
-{
-  "id": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-  "balance": { "amount": "1000.00", "currency": "BRL" },
-  "version": 1
-}
-```
-
-Criar wallet duplicada para o mesmo `playerId` + `currency` deve falhar como conflito.
-
-### Consultas
-
-```http
-GET /wallets/:walletId
-GET /wallets/:walletId/ledger?cursor=...&limit=50   # cursor estável e opaco
-GET /wagering/transactions/:transactionId
-GET /providers/:providerId/wagering/transactions/:externalTransactionId
-```
-
-### Submeter transação
-
-```http
-POST /wagering/transactions
-Idempotency-Key: provider-a:transaction-123
-```
-
-```json
-{
-  "providerId": "provider-a",
-  "externalTransactionId": "transaction-123",
-  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "roundId": "round-987",
-  "gameId": "fortune-chimp",
-  "kind": "BET",
-  "money": { "amount": "25.00", "currency": "BRL" }
-}
-```
-
-```json
-{
-  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
-  "status": "PROCESSED",
-  "balance": { "amount": "975.00", "currency": "BRL" },
-  "idempotentReplay": false
-}
-```
-
-**Idempotência:**
-
-- o header `Idempotency-Key` é obrigatório e é a fonte da verdade;
-- default recomendado: `"{providerId}:{externalTransactionId}"`;
-- `payloadHash` = hash de um **JSON canônico** (chaves ordenadas) do subconjunto de campos de negócio — o header e metadados de transporte não entram no hash. O algoritmo deve estar documentado;
-- requisição idêntica → mesma resposta, `idempotentReplay: true`;
-- mesma key com payload diferente → conflito, e **não** replay.
-
-**Status HTTP:** o mapeamento é decisão sua, mas a API precisa distinguir com clareza — e de forma consistente entre todos os endpoints — payload inválido, conflito de idempotência, rejeição por regra de negócio, aceite com processamento pendente e falha transitória de infraestrutura. Colapsar essas situações em um mesmo código obriga o provedor a interpretar mensagem de erro para decidir se pode reenviar.
-
-### Reconciliação
-
-```http
-POST /wallets/:walletId/reconciliation
-```
-
-```json
-{
-  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "storedBalance":     { "amount": "975.00", "currency": "BRL" },
-  "calculatedBalance": { "amount": "975.00", "currency": "BRL" },
-  "difference":        { "amount": "0.00",   "currency": "BRL" },
-  "consistent": true,
-  "checkedEntries": 42
-}
-```
-
-Divergências **não** são corrigidas silenciosamente: devem ser logadas, contabilizadas em métrica e sinalizadas na resposta.
-
-### Health checks
-
-```http
-GET /health/live     # processo vivo
-GET /health/ready    # PostgreSQL e SQS alcançáveis
-```
-
-Os endpoints de health **não** devem exigir autenticação.
-
----
-
-## 10. Processamento por SQS
-
-Filas:
-
-```
-wager-transactions.fifo
-wager-transactions-dlq.fifo
-```
-
-Mensagem:
-
-```json
-{
-  "messageId": "msg-123",
-  "type": "WagerTransactionRequested",
-  "occurredAt": "2026-07-29T15:00:00.000Z",
-  "data": {
-    "providerId": "provider-a",
-    "externalTransactionId": "transaction-123",
-    "idempotencyKey": "provider-a:transaction-123",
-    "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-    "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-    "roundId": "round-987",
-    "gameId": "fortune-chimp",
-    "kind": "BET",
-    "money": { "amount": "25.00", "currency": "BRL" }
+```bash
+bun --no-env-file -e '
+  const id=crypto.randomUUID();
+  process.stdout.write(JSON.stringify({
+    messageId:id, type:"WagerTransactionRequested", occurredAt:new Date().toISOString(),
+    data:{providerId:"provider-a",externalTransactionId:id,idempotencyKey:`provider-a:${id}`,
+      playerId:process.env.PLAYER_ID,walletId:process.env.WALLET_ID,roundId:"demo-round",gameId:"demo-game",
+      kind:"BET",money:{amount:"10.00",currency:"BRL"}}
+  }));
+' | docker compose --env-file /dev/null -p wagering exec -T api bun --no-env-file -e '
+  import { Configuration } from "./src/config/config.ts";
+  import { SqsTransport } from "./src/messaging/infrastructure/sqs-transport.ts";
+  import { bounded, QUEUES } from "./src/observability/health/dependencies.ts";
+  import { Database } from "./src/shared/infrastructure/database.ts";
+  import { pollUntil } from "./test/support/stack.ts";
+  const configuration=new Configuration();
+  const transport=new SqsTransport(configuration);
+  const database=new Database(configuration);
+  let passed=false;
+  try {
+    const message=await Bun.stdin.json();
+    const orm=await bounded(database.orm,2000);
+    await transport.send(QUEUES.requests,JSON.stringify(message),message.data.walletId,message.messageId);
+    await pollUntil("README SQS committed effect",async()=>{
+      const rows=await bounded(orm.em.getConnection().execute(`SELECT
+        t.id, t.status, t.wallet_id, t.player_id, t.kind, t.idempotency_key,
+        t.amount::text AS amount, t.currency,
+        w.balance::text AS stored_balance, w.currency AS wallet_currency,
+        (SELECT COALESCE(sum(CASE WHEN direction = ? THEN amount ELSE -amount END),0)::numeric(18,2)::text
+          FROM wallet_ledger_entries WHERE wallet_id = w.id) AS calculated_balance,
+        (SELECT count(*)::text FROM wallet_ledger_entries WHERE wallet_id = w.id) AS ledger_entries,
+        (SELECT count(*)::text FROM wallet_ledger_entries WHERE wallet_id = w.id AND transaction_id = t.id) AS transaction_entries,
+        (SELECT count(*)::text FROM inbox_messages WHERE consumer_name = ? AND message_id = ? AND processed_at IS NOT NULL) AS completed_inbox
+        FROM wager_transactions t JOIN wallets w ON w.id = t.wallet_id
+        WHERE t.provider_id = ? AND t.external_transaction_id = ?`,
+        ["CREDIT","wager-transactions-processor",message.messageId,message.data.providerId,message.data.externalTransactionId]),2000);
+      const row=rows[0];
+      if(!row) return undefined;
+      if(row.status!=="PROCESSED"||row.wallet_id!==message.data.walletId||row.player_id!==message.data.playerId||row.kind!=="BET"||row.idempotency_key!==message.data.idempotencyKey||row.amount!=="10.00"||row.currency!=="BRL"||row.wallet_currency!=="BRL"||row.stored_balance!=="80.00"||row.calculated_balance!=="80.00"||row.ledger_entries!=="3"||row.transaction_entries!=="1"||row.completed_inbox!=="1") throw new Error("Unexpected committed SQS effect");
+      return row;
+    },60000);
+    passed=true;
+  } catch {
+    process.exitCode=1;
+  } finally {
+    transport.close();
+    try { await database.onModuleDestroy(); } catch { passed=false; process.exitCode=1; }
   }
-}
+  console.log(JSON.stringify({sqsProcessed:passed,walletReconciled:passed,ledgerEntries:passed?3:null,inboxCompleted:passed}));
+'
 ```
 
-O consumidor deve:
+O resumo só informa sucesso após observar a identidade enviada em `PROCESSED`, exatamente um lançamento da aposta, inbox concluído, três lançamentos totais e saldo persistido/reconstruído de `80.00`. Antes da linha aparecer, o SQL e as respostas permanecem em memória. Uma ausência inicial apenas continua a observação; erro de SQL, resultado inesperado ou prazo esgotado reprova o comando, sem reenviar a aposta. Confirme também pelo endpoint de reconciliação:
 
-- reutilizar **o mesmo use case** da entrada HTTP;
-- deduplicar via **inbox persistente** por `(consumerName, messageId)`;
-- fazer `ack` **somente após o commit**;
-- distinguir erros de **negócio** (terminal, ack), **transitórios** (retry com backoff) e **permanentes** (DLQ);
-- respeitar um limite de tentativas antes da DLQ;
-- em `SIGTERM`, concluir mensagens em andamento ou devolver a visibilidade;
-- suportar redelivery sem duplicar efeitos.
-
----
-
-## 11. Transactional Outbox
-
-A persistência da transação, a alteração de saldo, o lançamento no ledger, o registro de inbox (quando a entrada for SQS) e o evento de integração precisam ser **atômicos**: ou tudo é confirmado junto, ou nada é.
-
-Um **worker** publica os eventos pendentes e precisa funcionar com múltiplos publishers concorrentes, sem perder nem duplicar indefinidamente.
-
-Cenário que precisa funcionar:
-
-1. o PostgreSQL confirma o commit;
-2. o processo morre antes de publicar;
-3. outra instância assume o trabalho;
-4. o evento é publicado;
-5. uma publicação duplicada continua segura para o consumidor.
-
-### Eventos mínimos
-
-| Evento | Quando |
-|---|---|
-| `WagerTransactionProcessed` | qualquer transação aplicada, inclusive `LOSS` |
-| `WagerTransactionRejected` | transação rejeitada por regra de negócio |
-| `WalletBalanceChanged` | **somente** quando o saldo muda |
-| `WagerTransactionPendingReference` | referência ausente |
-
-Envelope — **classe abstrata**, com uma subclasse concreta por evento:
-
-```ts
-interface IntegrationEventProps<T> {
-  eventId: string;
-  aggregateId: string;
-  correlationId: string;
-  causationId?: string;
-  occurredAt: Date;
-  data: T;
-}
-
-abstract class IntegrationEvent<T> {
-  abstract readonly eventType: string;
-  abstract readonly version: number;
-
-  readonly eventId: string;
-  readonly aggregateId: string;
-  readonly correlationId: string;
-  readonly causationId?: string;
-  readonly occurredAt: Date;
-  readonly data: Readonly<T>;
-
-  protected constructor(props: IntegrationEventProps<T>) { /* ... */ }
-
-  /** Envelope serializado gravado no payload da outbox. */
-  toJSON(): {
-    eventId: string;
-    eventType: string;
-    aggregateId: string;
-    correlationId: string;
-    causationId?: string;
-    occurredAt: string;   // ISO-8601
-    version: number;
-    data: T;
-  };
-}
+```bash
+curl_json 200 -X POST "http://127.0.0.1:3000/wallets/$WALLET_ID/reconciliation" -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  | bun --no-env-file -e 'const {httpStatus,body:r}=await Bun.stdin.json(); if(r.walletId!==process.env.WALLET_ID||r.consistent!==true||r.storedBalance?.amount!=="80.00"||r.calculatedBalance?.amount!=="80.00"||r.difference?.amount!=="0.00"||r.checkedEntries!==3) throw new Error("Post-SQS reconciliation failed"); console.log(JSON.stringify({httpStatus,sqsWalletReconciled:true,checkedEntries:r.checkedEntries}));'
 ```
 
-Exemplo de subclasse — o `eventType` e a `version` ficam **no tipo**, não em uma string solta no call site:
+O `MessageGroupId` precisa ser o `walletId`; o `MessageDeduplicationId` do transporte usa o `messageId`. O envelope exige `messageId` ASCII imprimível de até 128 caracteres. A deduplicação FIFO não substitui as constraints de idempotência e o inbox persistidos no PostgreSQL.
 
-```ts
-interface WalletBalanceChangedData {
-  walletId: string;
-  transactionId: string;
-  direction: LedgerDirection;
-  money: MoneyProps;
-  balanceBefore: MoneyProps;
-  balanceAfter: MoneyProps;
-  walletVersion: number;
-}
+Erros de negócio são terminais e confirmados. Falhas transitórias usam retry com backoff e redrive nativo após o limite de recebimentos; indisponibilidade do PostgreSQL pausa o polling. Payload inválido/falha permanente é encaminhado à DLQ. Uma referência ainda ausente pode confirmar `PENDING_REFERENCE`; o worker retoma pelo agendamento persistido, com prazo padrão de 24 h contado da primeira entrada, sem renovar o prazo em replay/reinício.
 
-class WalletBalanceChanged extends IntegrationEvent<WalletBalanceChangedData> {
-  readonly eventType = "WalletBalanceChanged";
-  readonly version = 1;
+## SQL, migrations e recuperação
 
-  static from(wallet: Wallet, entry: WalletLedgerEntry, ctx: EventContext): WalletBalanceChanged;
-}
+Para consultar contagens operacionais com Bun e a configuração já fornecida ao container:
+
+```bash
+docker compose --env-file /dev/null -p wagering exec -T api bun --no-env-file -e '
+  import { Configuration } from "./src/config/config.ts";
+  import { Database } from "./src/shared/infrastructure/database.ts";
+  const database=new Database(new Configuration());
+  try {
+    const orm=await database.orm;
+    const rows=await orm.em.getConnection().execute(`select
+      (select count(*)::text from wallets) as wallets,
+      (select count(*)::text from wallet_ledger_entries) as ledger_entries,
+      (select count(*)::text from outbox_messages where published_at is null) as unpublished_events,
+      (select count(*)::text from wager_transactions where status = ?) as pending_references`,["PENDING_REFERENCE"]);
+    console.log(JSON.stringify(rows));
+  } finally { await database.onModuleDestroy(); }
+'
 ```
 
-`data` carrega `MoneyProps` (string decimal), nunca a instância de `Money` — o payload precisa ser JSON estável e versionável.
+Essas contagens não substituem a prova financeira. Consulte o endpoint de reconciliação para a wallet; os testes verificam também a cadeia completa de saldos e versões.
 
----
+Migrations são versionadas, transacionais e reversíveis. O início normal já aplica `up`. Com as dependências da stack ativas, a CLI de redrive recebe a configuração pelo container:
 
-## 12. Observabilidade
-
-Obrigatório:
-
-- **logs estruturados** (JSON) com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`;
-- **sem** dados sensíveis ou payloads financeiros completos nos logs;
-- **métricas** cobrindo, no mínimo: transações por status, duplicatas detectadas, retries, mensagens em DLQ, conflitos de lock, outbox lag e latência de processamento;
-- **health checks** separados para liveness e readiness.
-
-OpenTelemetry e dashboard são opcionais.
-
----
-
-## 13. Testes obrigatórios
-
-### Unidade
-
-- operações e validações de `Money` (escala, arredondamento, entradas inválidas);
-- invariantes da `Wallet`;
-- regras de `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`;
-- conflito de moeda;
-- idempotency key com payload divergente.
-
-### Integração (PostgreSQL e LocalStack/MiniStack reais em containers)
-
-- migrations e constraints;
-- atomicidade entre wallet, ledger, inbox e outbox;
-- inbox e redelivery;
-- publishers concorrentes sobre a mesma outbox;
-- retry e DLQ;
-- recuperação após reinicialização.
-
-### Concorrência (paralelismo real, não mocks sequenciais)
-
-1. a mesma aposta enviada **50 vezes em paralelo** → um único débito;
-2. operações concorrentes disputando o saldo da mesma wallet (cenário da seção 8);
-3. wallets distintas processadas em paralelo;
-4. **≥ 3 processos/instâncias** simultâneos;
-5. worker morto **depois do commit e antes do ack**;
-6. dois publishers sobre a mesma outbox;
-7. `ROLLBACK` ou `REFUND` entregue antes da referência;
-8. reinício do serviço com comprovação da consistência final.
-
-**Invariante final de todos os testes:**
-
-```
-wallet.balance == saldo reconstruído pelo ledger
+```bash
+docker compose --env-file /dev/null -p wagering run --rm --no-deps bootstrap bun --no-env-file run dlq:redrive
 ```
 
----
+O redrive mantém o corpo e o grupo, envia à entrada com novo dedup ID e só então remove a mensagem da DLQ. Pode haver redelivery se o processo morrer entre essas duas ações; a idempotência SQL continua válida. Corrija a causa antes de executá-lo: o comando não conserta payloads nem reabre um resultado financeiro terminal. Ele termina no primeiro recebimento vazio; mensagens invisíveis ou atrasadas podem continuar na fila.
 
-## 14. Avaliação — 100 pontos
+`migration:down` reverte o schema e pode remover dados. O exemplo abaixo faz a reversão e reaplica a migration em banco descartável, com a aplicação parada. Execute-o somente após concluir o roteiro financeiro e guardar seus resumos; ele não preserva as wallets criadas acima:
 
-| Área | Pontos | O que será observado |
-|---|---|---|
-| Correção financeira | 20 | `Money`, saldo, ledger, reversões, reconciliação |
-| Concorrência | 20 | lost updates, hot wallet, múltiplas instâncias, locks |
-| Idempotência | 15 | dedup persistente, replay, payload conflitante |
-| Mensageria e falhas | 15 | inbox, outbox, retry, DLQ, crash recovery, shutdown |
-| Modelagem e arquitetura | 10 | invariantes encapsuladas em classes, boundaries, portas, simplicidade |
-| Testes | 10 | integração real, races, determinismo, cobertura de falhas |
-| Observabilidade | 5 | logs, métricas, health checks, diagnóstico |
-| Documentação | 5 | `README.md` com setup e comandos, `ARCHITECTURE.md` com decisões, trade-offs e limitações |
+```bash
+docker compose --env-file /dev/null -p wagering stop nginx api consumer worker
+docker compose --env-file /dev/null -p wagering run --rm --no-deps bootstrap bun --no-env-file run migration:down
+docker compose --env-file /dev/null -p wagering run --rm --no-deps bootstrap bun --no-env-file run migration:up
+bun run stack:up
+```
 
-### Falhas eliminatórias
+Os scripts `migration:up`, `migration:down` e `dlq:redrive` também podem ser chamados pelo Bun no host, mas exigem a configuração completa da aplicação. O caminho containerizado acima já a recebe do Compose.
 
-- `number` para dinheiro;
-- saldo negativo causado por race;
-- débito ou crédito duplicado;
-- idempotência apenas em memória;
-- solução correta somente com uma instância;
-- publicação de evento antes do commit;
-- ausência de ledger auditável;
-- testes que substituem completamente PostgreSQL e SQS por mocks.
+Um reinício normal usa os volumes existentes. Em `SIGTERM`, a readiness passa a indisponível antes da drenagem; o consumer cancela o long polling e tenta concluir/devolver mensagens dentro do prazo configurado. Após crash, consumidores retomam por redelivery e publishers retomam por lease persistido. Não remova registros de inbox/idempotência nem edite o ledger para tentar liberar uma operação.
 
-### Diferenciais opcionais
+## Logs, métricas e configuração
 
-Teste de carga também conta como diferencial. Se fizer, exponha como `bun run test:load` e registre ambiente, metodologia, throughput, p50/p95/p99, taxa de erro, conflitos de concorrência e outbox lag. Não há meta de RPS — a qualidade do experimento e a honestidade da análise pesam mais que o número bruto.
+Com `observability` ativo, abra [Grafana](http://127.0.0.1:3001/d/wagering) e [Prometheus](http://127.0.0.1:9090). O dashboard provisionado `Wagering Processor` permite leitura anônima no ambiente local. Mostra transações, duplicatas, retries, DLQ, locks, latência, filas, outbox, referências pendentes, divergências e saúde por réplica.
+
+```bash
+docker compose --env-file /dev/null -p wagering logs --tail 20 api consumer worker
+```
+
+Os logs da aplicação são JSON com campos permitidos e IDs de correlação, sem headers/tokens/corpos financeiros completos. `/health/live` verifica o processo; `/health/ready` verifica PostgreSQL e as três filas, sem autenticação. `/metrics` é acessível na rede interna e retorna `404` no Nginx. Prometheus coleta cada réplica; gauges de estado compartilhado, como lag da outbox, usam máximo entre réplicas, não soma. Histogramas do servidor estão em segundos e não substituem latência do cliente. Prometheus não possui volume persistente de TSDB neste Compose.
+
+Defaults operacionais não sensíveis, alteráveis por variáveis do processo antes de subir a stack:
+
+| Variáveis | Default / significado |
+| --- | --- |
+| `API_REPLICAS`, `CONSUMER_REPLICAS`, `WORKER_REPLICAS` | `1`, `1`, `1` no wrapper local |
+| `API_HOST_PORT`, `POSTGRES_HOST_PORT`, `SQS_HOST_PORT`, `KEYCLOAK_HOST_PORT` | `3000`, `5432`, `4566`, `8080` |
+| `PROMETHEUS_HOST_PORT`, `GRAFANA_HOST_PORT`, `TOXIPROXY_HOST_PORT` | `9090`, `3001`, `8474` |
+| `COMPOSE_PROFILES` | perfis opcionais `observability`, `chaos`, `load`, `verification` |
+| `CONSUMER_CONCURRENCY`, `SQS_BATCH_SIZE` | `10`, `10` |
+| `SQS_WAIT_SECONDS`, `SQS_VISIBILITY_SECONDS`, `SQS_MAX_RECEIVES` | `20`, `30`, `5` |
+| `SQS_RETRY_BASE_SECONDS`, `SQS_RETRY_MAX_SECONDS` | `2`, `30` |
+| `SHUTDOWN_DRAIN_MS` | `25000` |
+| `OUTBOX_LEASE_MS`, `OUTBOX_RETRY_MAX_MS` | `15000`, `300000`; lease deve exceder 2 s, máximo deve ser ≥ lease |
+| `REFERENCE_TTL_MS` | `86400000` (24 h) |
+| `APP_IMAGE_TAG`, `NODE_ENV` | `local`, `development` |
+| `APP_DB_HOST`, `APP_DB_PORT`, `APP_SQS_ENDPOINT` | `postgres`, `5432`, `http://ministack:4566`; rotas internas usadas também pelos testes de falha |
+| `POSTGRES_PASSWORD`, `OPERATOR_SECRET`, `PROVIDER_A_SECRET`, `PROVIDER_B_SECRET` | credenciais locais; manter fora de logs/evidências |
+| `LOAD_PROFILE`, `KEEP_STACK` | `quick` por padrão; `KEEP_STACK=1` preserva a stack de teste para diagnóstico |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Par opcional na aplicação; ausência de ambos usa a cadeia padrão do SDK. Par incompleto falha. O Compose fornece o par local. |
+| `DB_SSL_CA_FILE` | Ausente por padrão; quando informado, exige CA legível e verificação TLS do servidor. |
+| `BOOTSTRAP_CREATE_QUEUES` | `true` por padrão; `false` aplica migrations sem criar cliente SQS/filas. |
+| `LOAD_TARGET`, `LOAD_SCENARIO` | `compose` e `standard` por padrão; alvo remoto e patamares exigem seleção explícita. |
+
+O Compose fornece `APP_ROLE`, `PORT`, `DB_*`, `SQS_ENDPOINT`, `AWS_*`, `AUTH_ISSUER` e `AUTH_JWKS_URL`; seus contratos estão em [config.ts](src/config/config.ts). No modo local, endpoints de aplicação e credenciais são fornecidos pelo Compose. `TEST_SYNC_POINTS` e `TEST_SYNC_MATCH` são instrumentação dos testes de crash; ativar sync points fora de `NODE_ENV=test` aborta o início.
+
+## Verificar
+
+Após o roteiro local, encerre a stack de demonstração antes das suítes, evitando manter outra topologia 3/3/2 concorrendo pelos recursos do mesmo daemon. Esse encerramento preserva seus volumes:
+
+```bash
+bun run stack:down
+```
+
+Execute em série, na raiz do repositório:
+
+```bash
+bun install --frozen-lockfile
+bun run check
+bun run test
+bun run test:failure
+bun run test:load
+```
+
+| Script do manifesto | Escopo |
+| --- | --- |
+| `check` | lint, tipos e unidade |
+| `test:unit` | domínio e contratos isolados |
+| `test:integration` | migrations, constraints, atomicidade, inbox/outbox e HTTP |
+| `test:concurrency` | paralelismo real, réplicas, crash, reversões e reinício |
+| `test` | unidade + integração + concorrência |
+| `test:failure` | interrupção/latência PostgreSQL/SQS, pausa/reinício e drenagem |
+| `test:load` | k6 containerizado, perfil `quick` |
+
+A sequência anterior executa os checks e as suítes. O manifesto também oferece lint e tipos separadamente, além de `lint:fix`, que altera arquivos; não é necessário executar variantes adicionais para seguir este roteiro.
+
+A [CI versionada](.github/workflows/ci.yml) está configurada para push e pull request: varreduras de histórico e árvore com Gitleaks 8.30.1, instalação congelada, `check`, integração e concorrência. As actions usam commits fixados e a varredura de histórico faz checkout completo. A configuração está implementada; não há execução remota de GitHub Actions atribuída a esta entrega.
+
+As suítes com infraestrutura usam PostgreSQL/MiniStack reais e três APIs, três consumers e dois workers no projeto isolado `wagering-test`. Incluem 50 submissões paralelas da mesma aposta, disputa pelo saldo, wallets independentes, participação de várias instâncias, crash entre commit/ack, publishers concorrentes, referência fora de ordem e recuperação após reinício. O invariante é saldo persistido igual ao reconstruído pelo ledger, com verificação da cadeia e das versões.
+
+As portas de teste são `13000`, `15432`, `14566`, `18080`, `19090`, `13001` e, nos testes de falha, `18474`. Deixe-as livres. Os wrappers recusam substituir containers existentes desse projeto e removem seus volumes ao terminar. Execute uma suíte por vez. A opção de diagnóstico `KEEP_STACK=1` transfere ao operador a responsabilidade pela remoção posterior do projeto `wagering-test` e seus volumes; o roteiro normal deixa essa limpeza com o runner.
+
+Verificação manual opcional, separada dos testes obrigatórios e da CI:
+
+```bash
+bun run verify:manual --list
+```
+
+O modo padrão disponível na ferramenta inclui GNU parallel, oha/k6, pg_activity, Pumba, Toxiproxy, netem, tcpdump e stress. A opção `--only` seleciona um experimento ou uma lista separada por vírgulas; os nomes válidos são informados por `--list`. O seletor de determinismo é separado do padrão e, se escolhido voluntariamente, executa vinte rodadas seriais, encerrando na primeira falha. **Uma nova GNU20 foi explicitamente dispensada para esta entrega, inclusive Task 13, comandos literais e handoff; não integra o roteiro executável acima.**
+
+Esses experimentos usam ferramentas containerizadas, daemon local exclusivo e capacidades de rede do Docker em Linux. Stress e determinismo exigem o commit com árvore limpa. Cada execução de experimentos cria uma pasta nova externa em `~/.cache/wagering-verification`; `--list` apenas informa as opções. A opção `--output` permite escolher outra pasta vazia fora do checkout. Não altere código, imagens ou instrumentos nem execute outros probes durante uma campanha congelada. Veja [docs/verification.md](docs/verification.md) para escopo, restrições e evidências por versão.
+
+**Manual retido encerrado:** `manual-retained-a98d1e6-1`, source `a98d1e6fe248f2e6bee4f2cf54317fc961aab062`, captura de 01/11/2026 às 23:06:21.023–23:20:13.862 UTC. Os oito seletores concluíram com resultado global PASS, filho exit 0 e source/cleanup aprovados pela captura. Os cinco comandos somam 29 PASS/0 FAIL/11.819 assertions: principal 13/0/9.422, reconciliação 1/0/288, tcpdump 1/0/56, stress 13/0/1.549 e reconciliação do stress 1/0/504. Foram reconciliados conjuntos separados de 71, 1 e 125 wallets. O `pg_activity` preserva exit 124 da ferramenta, apesar do PASS do caso; tcpdump correlaciona confirmação ORM, snapshot SQL e chamadas SDK com metadados, sem decodificar COMMIT no fio. O auditor leu artefatos, sem uma segunda consulta SQL após teardown ou inspeção Git/Docker. O PASS histórico de `manual-retained-2` em `9fab36026b375c306a70c0aabaacbd5cdc811526` permanece separado, com 29 testes e 11.939 assertions. A GNU retida encerrou seis rodadas seriais, todas exit 0/signal 0; o runner original conservou FAILED por exigir vinte, enquanto a captura comprovou source e cleanup no seu escopo. O usuário dispensou a nova GNU20 na Task 13, no roteiro literal e no handoff. O histórico d11 com vinte rodadas permanece outra campanha; não se somam as versões. O comportamento opcional de determinismo é descrito apenas como referência; não há comando de nova campanha no roteiro literal desta entrega.
+
+## Carga e limites de interpretação
+
+O comando de carga da sequência de verificação usa `quick`. As cinco fases cobrem carteira única, mil carteiras, 10% de replays, carteira única e distribuídas simultâneas, e backlog SQS. A variável `LOAD_PROFILE` também aceita `full`, com rampas maiores e dez mil mensagens; a duração inclui seed, recuperação e drenagem, podendo superar bastante o tempo de tráfego HTTP. O runner guarda artefatos em `load/results/<runId>/`, ignorados pelo Git. A reprodução completa e os resultados históricos estão no relatório de carga.
+
+O relatório distingue throughput e p50/p95/p99 do cliente, respostas transitórias, descartes do gerador, conflitos, lag e drenagem. A aceitação exige prova das identidades financeiras, ledger, inbox/outbox, reconciliação, DLQ vazia e participação das réplicas. Um resultado parcial não é aprovação. A fase HTTP mista histórica oferece duas rampas completas, dobrando a taxa agregada; não é comparação à mesma taxa total. Resultados e limitações da versão medida estão em [docs/load-test.md](docs/load-test.md); não há meta de RPS nem extrapolação para AWS/produção.
+
+**Full retido encerrado e reprovado:** run `2026-11-01T22-25-40-451Z-d9d6e892`, source `a98d1e6fe248f2e6bee4f2cf54317fc961aab062`, perfil/alvo/cenário `full/compose/standard`. O wrapper executou em 01/11/2026 das 22:25:40.248 às 23:05:06.199 UTC e terminou FAILED / exit 1. O verificador parcial passou 1 teste/0 falhas/2.009 assertions: na fotografia salva, 90.351 transações processadas = 90.351 lançamentos, 180.702 eventos, 6.862 ainda não publicados, 9.910 inbox completos e zero efeitos financeiros duplicados contados, em 1.001 wallets observadas. Isso não comprova os 10.000 comandos SQS pretendidos, outbox final vazia, DLQ final ou participação final: os artefatos completos não foram produzidos. O timeout no gate SQS de 180 s é compatível com os dados e foi atribuído pelo responsável; o label do gate e sua última leitura não estão preservados na projeção segura, e a causa do atraso não foi estabelecida. Os três full7/8/9 aprovados continuam históricos da fonte `06e6165cb8611ec650dfc4ec947c6d4513da92cf`; não aprovam esse run nem têm seus valores finais transferidos a ele.
+
+## Relatório visual offline
+
+O HTML e os cinco SVGs pré-gerados em [docs/load-report/index.html](docs/load-report/index.html) abrem diretamente por `file://`, sem servidor, rede ou biblioteca externa. Os seis artefatos foram gerados e inspecionados em quatro modos de navegador: claro e escuro, desktop e mobile. Os testes do renderer passaram com 26 testes e 87 asserções no candidato validado. O renderer é um arquivo Bun independente; não adiciona dependência nem script ao `package.json`.
+
+Para regenerar, forneça três diretórios externos de agregados e um diretório de saída **novo**. Os artefatos financeiros brutos e os diretórios de entrada não acompanham o clone. Defina `AWS_QUICK_AGGREGATES`, `LOCAL_FULL_AGGREGATES`, `AWS_FULL_AGGREGATES` e `RENDER_OUTPUT` com esses caminhos no ambiente da sessão; o comando não possui defaults privados ou fallback com números embutidos:
+
+```bash
+BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true \
+bun --no-env-file scripts/render-load-report.ts \
+  --aws-quick "$AWS_QUICK_AGGREGATES" \
+  --local-full "$LOCAL_FULL_AGGREGATES" \
+  --aws-full-1 "$AWS_FULL_AGGREGATES" \
+  --output-dir "$RENDER_OUTPUT"
+```
+
+O CLI exige as quatro opções; recusa destino existente, entradas ausentes, provas inválidas ou mistura de identidade. Ele gera `index.html`, `overview.svg`, `hot_wallet.svg`, `distributed_wallets.svg`, `replays.svg` e `hot_plus_distributed.svg`. Lê somente agregados autorizados e nunca fixtures, respostas, headers ou payloads completos. A regeneração é opcional para ler o relatório pré-gerado; sua execução literal exige os inputs externos correspondentes e precisa de registro próprio.
+
+O painel quantitativo usa apenas smoke5 **QUICK diagnóstico**, uma execução da coorte `a98/36b77c…`. Os dois fulls dessa coorte são excluídos integralmente por ausência dos agregados finais obrigatórios; não se reaproveitam suas fases para construir uma rodada aceita. A/B/C da coorte `c99…` são contexto histórico textual separado. Não há três fulls aceitos, comparação full local/AWS ou custo faturado disponível. Os cinco pontos HTTP de cada QUICK ficam antes do recorte de 30 s e o único ponto Prometheus SQS precede o produtor; as respectivas séries estáveis e curva de throughput SQS são indisponíveis, sem interpolação ou zero inventado.
+
+## Extensão AWS opcional
+
+A [operação AWS](infra/aws/README.md) descreve uma extensão separada, com endpoints privados, imagens por digest, manifesto de origem fixado e infraestrutura própria. Ela não acrescenta AWS CLI, conta AWS ou ferramentas de cloud aos requisitos do roteiro local. O bootstrap local continua criando filas; na extensão, `BOOTSTRAP_CREATE_QUEUES=false` deixa essa propriedade com o Terraform. A ausência do par de credenciais estáticas permite a role pela cadeia padrão do SDK.
+
+Para PostgreSQL remoto, `DB_SSL_CA_FILE` habilita TLS com CA e identidade verificadas. O bundle público de `us-east-2` está em [docker/aws/us-east-2-bundle.crt](docker/aws/us-east-2-bundle.crt); sua origem e hash estão em [ARCHITECTURE.md](ARCHITECTURE.md). A readiness e o sampler continuam consultando PostgreSQL e as três filas. A role da API recebe somente `sqs:GetQueueUrl` e `sqs:GetQueueAttributes` nessas filas, sem enviar, receber ou remover mensagens.
+
+No alvo remoto, um observador real consome eventos e persiste inbox/efeito por `eventId`; o oráculo compara as identidades esperadas e observadas nos dois sentidos, além da prova financeira. Um resultado parcial só comprova os efeitos já persistidos que conseguiu verificar e mantém a campanha global reprovada. A observação remota não modifica o fluxo local, que deixa a fila de eventos para destinatários externos.
+
+Os patamares fixos de 50/100 requisições por segundo são um cenário separado das rampas `full`: duram 180 s, separam os primeiros 30 s nas métricas estáveis e preservam todas as identidades na prova financeira. Não estabelecem capacidade máxima nem isolam o efeito de trocar MiniStack por SQS. O plano original fixou 270 minutos cumulativos; instruções posteriores do usuário autorizaram extensões limitadas dentro do mesmo orçamento de US$ 10 e de duas sessões. A última configuração operacional registrada usa 350 minutos cumulativos, encerramento automático às 06:53:04 UTC de 02/11/2026 e reserva para limpeza, sem terceira sessão. O runbook deve preservar o histórico dessas autorizações e dos controles realmente verificados. Parar compute não elimina todos os custos; custo final faturado permanece desconhecido.
+
+**AWS encerrado no escopo de carga:** smoke5 QUICK diagnóstico aceito; FULL1 FAILED após quatro fases HTTP, ao entrar no backlog SQS, com `RequestThrottled` preservado e operação SDK terminal não diretamente identificada. Não existem `result.json` e `verification.json` completos desse full. A prova posterior READ ONLY/REPEATABLE READ/TLS reconciliou as 1.001 wallets, sem negativos, inconsistências, duplicatas ou órfãos contados; encontrou 74.210 transações processadas/lançamentos, 148.420 eventos e 11.848 eventos ainda sem efeito observado. Essa fotografia financeira não comprova cobertura completa de eventos, dez mil comandos ou uma rodada full aceita. Full2, full3 e patamares ficaram bloqueados pelo predecessor reprovado. O destroy terminou como processo exit 0 às 06:19:03.065 UTC, mas esse resultado isolado não prova ausência nativa final, zero literal de tags, exclusão permanente de task definitions ou custo faturado. As verificações nativas posteriores encontraram zero recursos faturáveis acompanhados, mas a service-linked role do ALB continua pendente. A exceção autorizada para metadados assíncronos não inclui silenciosamente essa role, nem comprova zero literal de tags ou exclusão permanente das task definitions. O cleanup não está declarado PASS e o custo final faturado permanece desconhecido.
+
+**Verificação do candidato:** o clone isolado passou `check` com 193 testes/1.611 asserções e a integração real com 177 testes/6.703 asserções. A revisão focada da Task 12 encerrou sem achados Critical ou Important. Esses resultados pertencem ao candidato correspondente; os cinco comandos finais e a execução literal deste README no clone de entrega ainda exigem seus próprios registros. Os artefatos visuais publicados não mudam o resultado de qualquer campanha.
+
+A prevenção de segredos mantém as regras padrão do scanner e permite somente os quatro defaults locais exatos já existentes. Arquivos `*.key`/`*.pem` não são versionados; o teste TLS gera chaves temporárias em runtime. O histórico, a árvore e os artefatos de execução têm escopos de varredura próprios. As classificações de falsos positivos ficam vinculadas aos fingerprints exatos de seus contextos e arquivos, sem exclusão ampla de caminhos ou regras. O scan pós-AWS original preservado registrou 30 findings: dez previamente conhecidos e vinte cópias dos quatro seletores públicos CloudWatch, verificadas por igualdade exata de linha/contexto em RAM. Isso não é zero findings bruto. O scanner externo v4 reconhece somente essas provas exatas e reprova qualquer achado extra ou alterado; os resultados de histórico, árvore, execução e artefatos opacos mantêm registros próprios, vinculados às respectivas fontes. Nenhum valor é publicado ou considerado seguro apenas pelo caminho.
+
+## Varredura opcional de segredos
+
+Estes comandos usam somente Docker e a imagem fixada `ghcr.io/gitleaks/gitleaks:v8.30.1`, sem Gitleaks instalado no host. Execute na raiz de um clone completo, com seu diretório `.git` dentro do checkout. A montagem é somente leitura; a configuração Git abaixo vale apenas para o processo no container e permite ler esse checkout sem depender de seu UID. O histórico cobre todas as referências **disponíveis no clone**; `--all` não baixa referências ausentes nem completa um clone shallow.
+
+Para o histórico Git completo disponível:
+
+```bash
+docker run --rm --mount "type=bind,source=$PWD,target=/repo,readonly" \
+  --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/repo \
+  ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo \
+  --redact --no-banner --config /repo/.gitleaks.toml --log-opts=--all
+```
+
+Para os arquivos presentes no checkout, incluindo alterações ainda não commitadas:
+
+```bash
+docker run --rm --mount "type=bind,source=$PWD,target=/repo,readonly" \
+  ghcr.io/gitleaks/gitleaks:v8.30.1 dir /repo \
+  --redact --no-banner --config /repo/.gitleaks.toml
+```
+
+As duas varreduras se complementam e usam a configuração restrita versionada: regras padrão e somente quatro defaults locais exatos permitidos. `--redact` oculta valores; retenha apenas status, contagens, nomes de regras e caminhos necessários. Não remova a configuração, amplie a allowlist ou exclua caminhos para obter aprovação. O hook instalado neste clone é uma proteção opcional para contribuidores, não uma dependência dos testes, da stack ou destes comandos; hooks locais não são transportados automaticamente ao clonar. A validação literal das duas linhas containerizadas na fonte de entrega ainda precisa de registro próprio; nenhum resultado remoto de CI é declarado aqui.
+
+## Encerrar e limitações locais
+
+O encerramento mostrado antes das suítes remove os containers do projeto local e preserva os volumes PostgreSQL/MiniStack. Para apagar **todos os dados locais** desse projeto:
+
+```bash
+docker compose --env-file /dev/null -p wagering down --volumes --remove-orphans
+```
+
+O Compose é demonstrativo: usa Keycloak `start-dev`, não configura TLS, publica portas de API/PostgreSQL/MiniStack/Keycloak e contém defaults de desenvolvimento. Não o exponha como implantação de produção. A observabilidade não preserva seu histórico após recriação. Entrega de eventos é *at-least-once*: um crash após confirmação SQS e antes da marcação SQL pode repetir `eventId`; consumidores externos precisam deduplicá-lo. Os grupos FIFO usam `aggregateId`, e não há ordem total entre tipos/agregados nem garantia adicional de ordem entre publishers concorrentes. A aplicação não consome a fila de eventos; sua retenção e integração com destinatários externos ficam fora deste fluxo local.
