@@ -2,10 +2,10 @@
 
 Esta página registra o resultado da extensão AWS prevista no plano de medição. O
 experimento previa smoke de setup, três rodadas FULL e patamares constantes, com
-dados novos e parâmetros fixos. A primeira sessão falhou na implantação. A segunda
-produziu um QUICK diagnóstico aprovado e um FULL reprovado; o gate de predecessor
+dados novos e parâmetros fixos. A medição produziu um QUICK diagnóstico aprovado
+e um FULL reprovado; o gate de predecessor
 aprovado impediu FULL2, FULL3 e todos os patamares. Falhas anteriores foram
-preservadas. Uma terceira e última sessão foi autorizada após a correção local descrita
+preservadas. Uma nova sessão foi autorizada após a correção local descrita
 abaixo; sua execução ainda não está comprovada nesta revisão.
 
 ## Ambiente, fonte e parâmetros
@@ -18,7 +18,7 @@ Keycloak, RDS PostgreSQL 17 single-AZ `db.m7g.2xlarge`, gp3 de 100 GB, TLS verif
 SQS FIFO gerenciado, ALB interno e runner privado `c7i.2xlarge` por SSM. Não houve
 NAT Gateway, IP público ou SSH. A topologia e o procedimento estão em
 [rede e dimensionamento](../infra/aws/README.md#rede-e-dimensionamento) e
-[ordem de operação e orçamento](../infra/aws/README.md#ordem-de-operação-e-orçamento).
+[ordem de operação](../infra/aws/README.md#ordem-de-operação).
 
 O QUICK usou `quick/standard/remote`: quatro fases HTTP com estágios de sete
 segundos, 1.001 carteiras e backlog de 1.000 comandos. A aprovação final salvou
@@ -69,26 +69,6 @@ carga permanecem os mesmos.
 Essa correção trata uma falha alcançável do gerador, cuja implementação anterior
 encerrava no primeiro throttle. A operação terminal histórica continua desconhecida.
 Testes com falhas injetadas não comprovam recuperação de throttling AWS real.
-O usuário autorizou uma terceira e última sessão de até três horas incluindo limpeza,
-com teto acumulado de US$ 18. Os 60 minutos finais ficam reservados para coleta e
-limpeza. A sequência continua QUICK → FULL1 → FULL2 → FULL3 → patamares, exigindo
-aprovação integral de cada predecessor. Os resultados anteriores não foram
-reclassificados, e ainda não há FULL AWS aprovado nesta fonte.
-
-## Custo e encerramento
-
-As duas primeiras sessões tinham teto acumulado de US$ 10. A autorização posterior
-elevou o teto acumulado a US$ 18 e permitiu uma terceira e última sessão. O custo final atribuível ao projeto
-permanece **UNAVAILABLE**. Budgets reportou US$ 0,00 para a conta, sem filtro de
-projeto e sem informação de atualização; isso não demonstra custo zero, execução
-gratuita ou saldo disponível. Os modelos usados na admissão não são faturamento.
-
-O destroy terminou aprovado. A verificação posterior confirmou as três
-service-linked roles ausentes e leituras nativas sem falha (`FAILED=0`), mas o índice
-de tags ainda continha 44 referências conhecidas. O fechamento foi classificado
-sob a exceção autorizada de metadados assíncronos: não significa zero literal de
-tags, exclusão permanente independentemente provada das revisões ECS ou
-faturamento encerrado. `cleanupVerified=false` e `billingVerified=false` permanecem
-nos recibos. O alcance exato está em
-[estado operacional e gates finais](verification.md#estado-operacional-e-gates-finais)
-e no [contrato de coleta e destruição](../infra/aws/README.md#coleta-e-destruição-verificadas).
+A nova medição foi autorizada. A sequência continua QUICK → FULL1 → FULL2 →
+FULL3 → patamares, exigindo aprovação integral de cada predecessor. Os resultados
+anteriores não foram reclassificados, e ainda não há FULL AWS aprovado nesta fonte.

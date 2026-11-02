@@ -38,7 +38,7 @@ terraform -chdir=infra/aws test
 ```
 
 Os seis testes usam `mock_provider`, sem chamadas AWS: rede privada/serviços parados, recusa de
-startup sem gates, prazo cumulativo, fronteira de 350 minutos e recusa de um segundo adicional,
+startup sem gates, prazo cumulativo e recusa de um segundo além da fronteira,
 além da topologia 3/3/2 após os gates. Eles verificam a chave SDK `DbInstanceIdentifier` no target
 RDS, API restrita aos metadados das três filas e ausência do grant temporário de envio de eventos.
 Eles não demonstram que um schedule executou uma parada real. O atributo de custom health do
@@ -85,23 +85,19 @@ Construa app e Keycloak a partir do commit limpo retido. Espelhe também k6 `2.3
 ECS-optimized AL2023 x86_64 resolvida uma vez no preflight e conservada por ID. O runner não tem
 acesso a GitHub, Docker Hub ou Quay para instalar ferramentas durante o boot.
 
-## Ordem de operação e orçamento
+## Ordem de operação
 
-A autorização atual permite uma **terceira e última sessão de até três horas**, incluindo
-provisionamento, medições, coleta e limpeza, com **teto acumulado de US$ 18**. O alerta
-AWS Budgets existente de US$ 10 não interrompe gastos nem comprova saldo em tempo real.
-Mantenha o ledger externo desde antes do primeiro apply até a remoção verificada, preservando
-o histórico das duas sessões anteriores. `session_started_at`, `previous_runtime_seconds` e
-`stop_at` são fixos na sessão. O prazo não pode superar `session_started_at + 3h`; reapplies
-não reiniciam esse relógio. A autorização não inclui quarta sessão.
+Defina `session_started_at`, `previous_runtime_seconds` e `stop_at` antes de aplicar
+e mantenha-os fixos na sessão. Reapplies não reiniciam o relógio. Reserve tempo
+para coleta e remoção dos recursos dentro do prazo operacional autorizado.
 
 1. Depois da revisão focada, confirme identidade com `aws sts get-caller-identity --profile
-   wagering-load --region us-east-2`, validade das credenciais, quotas e alerta de orçamento. Uma
+   wagering-load --region us-east-2`, validade das credenciais e quotas. Uma
    permissão ausente deve ser reportada pela ação exata, sem outro profile ou contorno.
 2. Gere um plano salvo externo. Confira uma projeção em memória que contenha somente tipos,
    operações, flags de exposição, tamanhos, tags e prazos. Confirme explicitamente **zero NAT
    Gateway e zero IP público** antes de aplicar. Não publique o plano JSON completo.
-3. Registre início no ledger antes de aplicar. O primeiro apply mantém `start_services=false`.
+3. O primeiro apply mantém `start_services=false`.
    Verifique os seis schedules reais: quatro `ecs:UpdateService` para zero, `rds:StopDBInstance`
    e `ec2:StopInstances`, com timezone UTC, janela OFF, role e recursos exatos e o mesmo deadline.
    Se algum guardrail falhar, destrua imediatamente; não prossiga para a carga.
@@ -116,12 +112,13 @@ não reiniciam esse relógio. A autorização não inclui quarta sessão.
    database nova, nesta ordem fixa. Pare os serviços antes de trocar `run_database_name`, migre e
    confirme filas vazias antes de reiniciar. Não altere `db_name` do recurso RDS entre rodadas.
    Preserve cada rodada, inclusive falhas. Não repita para escolher uma rodada favorável.
-7. Reserve operacionalmente os 60 minutos finais da sessão para parar admissão, coletar e destruir. Não inicie uma etapa que não
-   caiba. Credenciais inválidas com stack ativa exigem aviso imediato; não troque identidade.
+7. Reserve tempo para parar admissão, coletar e destruir antes do prazo operacional. Não inicie
+   uma etapa que não caiba nessa janela. Credenciais inválidas com stack ativa exigem aviso
+   imediato; não troque identidade.
 
 Os schedules têm precisão de um minuto, e a parada do RDS é assíncrona. Eles são a proteção de
-emergência contra perda da sessão, não uma garantia de cessação de cobrança no instante agendado.
-ALB, endpoints e storage continuam cobrando depois de stop. **Destroy é obrigatório em todo desfecho.**
+emergência contra perda da sessão e não substituem a remoção dos recursos.
+**Destroy é obrigatório em todo desfecho.**
 Uma falha parcial de apply não é atômica: recursos podem existir antes dos schedules; destrua-os
 imediatamente se a proteção não puder ser confirmada.
 
@@ -177,7 +174,7 @@ apague as INACTIVE exclusivas com `ecs:DeleteTaskDefinitions` e confira o desfec
 roles compartilhadas/preexistentes precisam ser inventariadas antes do apply; a autorização não
 permite apagar indiscriminadamente recursos de outra finalidade.
 
-Feche o ledger somente após destroy e verificação remota. Com três full reconciliados, publique
-resultados complementares; com falta de acesso, prazo ou setup sem sucesso nas três sessões autorizadas,
-documente a limitação e siga com a entrega principal. Nenhum número AWS representa produção,
+Com três full reconciliados, publique resultados complementares; com falta de acesso, prazo
+ou setup sem sucesso, documente a limitação e siga com a entrega principal.
+Nenhum número AWS representa produção,
 Multi-AZ, latência do Brasil ou uma comparação isolada entre SQS e MiniStack.

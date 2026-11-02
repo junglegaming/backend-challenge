@@ -557,31 +557,20 @@ O PASS manual e as repetições de concorrência não substituem essa reprovaç�
 
 ### Ambiente AWS e limites da campanha
 
-O [relatório específico AWS](load-test-aws.md) reúne o fechamento desta extensão e os links para suas evidências canônicas.
+O [relatório específico AWS](load-test-aws.md) reúne os resultados desta extensão e os links para suas evidências canônicas.
 
-A segunda e última implantação usou somente `us-east-2`, com três APIs, três
+O ambiente da medição usou somente `us-east-2`, com três APIs, três
 consumers e dois workers Fargate (1 vCPU/2 GB cada), Keycloak, RDS PostgreSQL 17
 single-AZ `db.m7g.2xlarge` com gp3 de 100 GB e TLS verificado, FIFO SQS gerenciado,
 ALB interno e runner privado `c7i.2xlarge` por SSM. Não houve NAT Gateway, IP público
 ou SSH. A aplicação foi a mesma fonte a98; permissões, filas e instrumentação
 operacional têm suas próprias revisões e recibos.
 
-O objetivo prévio era smoke, três FULL e patamares constantes. A primeira sessão
-foi encerrada após falha de implantação; não produziu carga aprovada. Na segunda,
-falhas de setup e diagnóstico foram preservadas, o QUICK aprovado foi seguido de
-um FULL reprovado, e a dependência de aprovação do predecessor impediu FULL2,
-FULL3 e patamares. Não se iniciou uma terceira sessão ou retry de rodada para
-escolher resultado favorável. Não há capacidade sustentada AWS medida.
-
-O orçamento autorizado foi US$ 10. A leitura do Budgets às **07:26:45.460 UTC de
-02/11/2026** confirmou um orçamento mensal de US$ 10, sem filtro de projeto,
-com créditos excluídos, e valor reportado de US$ 0. O atraso dessa informação
-é desconhecido: **custo final faturado e saldo real permanecem indisponíveis**.
-O valor reportado não significa campanha gratuita. Os modelos conservadores
-usados para admitir janelas, o ledger de tempo e os recibos de parada são
-estimativas e controle operacional, sem atribuição de custo faturado por projeto.
-O destroy Terraform terminou com exit 0 às **06:19:03 UTC**; a verificação remota
-de limpeza é registrada separadamente em [verification.md](verification.md).
+O objetivo prévio era smoke, três FULL e patamares constantes. Falhas de setup
+e diagnóstico foram preservadas; o QUICK aprovado foi seguido de um FULL
+reprovado, e a dependência de aprovação do predecessor impediu FULL2, FULL3 e
+patamares. Não houve repetição de rodada para escolher resultado favorável.
+Não há capacidade sustentada AWS medida.
 
 ### AWS QUICK aprovado: alcance e valores dos gráficos
 

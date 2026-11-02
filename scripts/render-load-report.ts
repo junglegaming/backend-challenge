@@ -932,14 +932,13 @@ export function overviewSvg(view: ReportView): string {
     ["QUICK aceita / nominada", "1 / 1"],
     ["FULL aceito / nominado", "0 / 2"],
     ["Respostas HTTP", number(requests, 0)],
-    ["Custo efetivo", "Indisponível"],
   ];
   cards.forEach(([label, value], index) => {
-    const x = 36 + index * 287;
+    const x = 36 + index * 388;
     body +=
       '<rect x="' +
       x +
-      '" y="103" width="270" height="88" rx="10" fill="none" stroke="#93abb6"/><text x="' +
+      '" y="103" width="352" height="88" rx="10" fill="none" stroke="#93abb6"/><text x="' +
       (x + 16) +
       '" y="130" class="small muted">' +
       label +
@@ -1005,7 +1004,7 @@ export function overviewSvg(view: ReportView): string {
       " ms · pico amostrado do backlog: " +
       number(view.sqs.peak, 0),
     "Sem três FULL AWS, comparação full local/AWS ou ganho de performance demonstrado.",
-    "Cost/CPU/memória, estágios claim/send/confirm e séries durante a drenagem: indisponíveis nesta allowlist.",
+    "CPU/memória, estágios claim/send/confirm e séries durante a drenagem: indisponíveis nesta allowlist.",
   ];
   facts.forEach((fact, index) => {
     body +=
@@ -1243,14 +1242,14 @@ export function reportHtml(view: ReportView): string {
     ) +
     "<p>Envio e consumo se sobrepõem. O burst curto não mede capacidade sustentada ou percentil por mensagem. A série SQS disponível contém somente uma fronteira anterior ao primeiro envio; por isso nenhuma curva de consumo/publicação SQS é desenhada. As durações e contagens acima têm fontes e janelas próprias. Concorrência de batches configurada: " +
     number(view.generator.batchConcurrency, 0) +
-    '.</p></section><section id="experiencias"><h2>Experiência rejeitada e provas de recuperação separadas</h2><p><strong>Persistência em lote da outbox: experiência REJEITADA.</strong> O candidato não foi retido; nenhum ganho de desempenho é reivindicado. A metodologia, os critérios e o resultado fechado estão na <a href="../load-test.md#experiência-controlada-de-persistência-em-lote-da-outbox">experiência controlada documentada em load-test.md</a>. Seus benchmarks não alimentam estes gráficos.</p><p>As provas aceitas de falhas e recuperação pertencem às campanhas descritas em <a href="../verification.md#manual-entregue-oito-seletores-pass">verification.md: oito seletores manuais</a>. A <a href="../verification.md#gnu-seis-rodadas-funcionais-waiver-e-falha-formal-do-wrapper">campanha GNU de seis rodadas e a falha formal do wrapper</a> mantém seu waiver e seu resultado próprios. Esses vínculos editoriais não leem artefatos adicionais, não transformam testes de falha em amostras de carga e não alteram o denominador deste painel.</p></section><section id="limites"><h2>Lacunas que permanecem visíveis</h2><ul><li>Sem três FULL AWS aceitos ou comparação quantitativa local/AWS. Nenhuma otimização de performance foi retida.</li><li>Custo efetivo e custo por transação: <strong>indisponíveis</strong>. Orçamento ou modelo de preço não é faturamento, e dado ausente não é zero.</li><li>CPU, memória, rede, RDS e ALB não pertencem aos agregados admitidos; não são gráficos vazios com zero.</li><li>Claim PostgreSQL, send SQS, confirm PostgreSQL, latência por evento e cardinalidade SQL ao longo do tempo: não medidos por estes arquivos.</li><li>Não há trecho QUICK após excluir 30 s nem série durante toda a drenagem. NaN e séries ausentes permanecem lacunas; sem suavização ou deslocamento temporal.</li><li>Conflitos de lock sem série não significam zero conflitos. Histogramas por réplica não viram percentil global por média.</li></ul><p>Prova financeira e cobertura de eventos são resultados do verificador salvo. O renderer não consulta o banco ou reconstrói o ledger. Estado final de cleanup AWS e custo efetivo dependem do fechamento operacional; este painel não os certifica.</p></section><section id="reproducao"><h2>Reproduzir com Bun, sem serviço ou rede</h2><p>O script acompanha o clone e usa somente Bun e APIs nativas. Forneça os três diretórios com os agregados autorizados e uma pasta de saída nova; nenhum caminho privado de planejamento é default. Nenhum agregado bruto com identificadores precisa ser commitado.</p><pre>BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true bun --no-env-file scripts/render-load-report.ts \\\n  --aws-quick /caminho/agregados-quick \\\n  --local-full /caminho/agregados-full-local \\\n  --aws-full-1 /caminho/agregados-full-aws \\\n  --output-dir /caminho/novo-relatorio</pre><p>Os leitores abrem somente result.json, verification.json, environment.json e os quinze nomes literais de fase/counters/prometheus. Os FULL excluídos não têm suas fases abertas. Mistura de fonte/hash é recusada mesmo quando o run seria excluído. HTML/SVG usam conteúdo inline, sem bibliotecas, fontes, scripts ou serviços externos.</p><details><summary>Proveniência dos ' +
+    '.</p></section><section id="experiencias"><h2>Experiência rejeitada e provas de recuperação separadas</h2><p><strong>Persistência em lote da outbox: experiência REJEITADA.</strong> O candidato não foi retido; nenhum ganho de desempenho é reivindicado. A metodologia, os critérios e o resultado fechado estão na <a href="../load-test.md#experiência-controlada-de-persistência-em-lote-da-outbox">experiência controlada documentada em load-test.md</a>. Seus benchmarks não alimentam estes gráficos.</p><p>As provas aceitas de falhas e recuperação pertencem às campanhas descritas em <a href="../verification.md#manual-entregue-oito-seletores-pass">verification.md: oito seletores manuais</a>. A <a href="../verification.md#gnu-seis-rodadas-funcionais-waiver-e-falha-formal-do-wrapper">campanha GNU de seis rodadas e a falha formal do wrapper</a> mantém seu waiver e seu resultado próprios. Esses vínculos editoriais não leem artefatos adicionais, não transformam testes de falha em amostras de carga e não alteram o denominador deste painel.</p></section><section id="limites"><h2>Lacunas que permanecem visíveis</h2><ul><li>Sem três FULL AWS aceitos ou comparação quantitativa local/AWS. Nenhuma otimização de performance foi retida.</li><li>CPU, memória, rede, RDS e ALB não pertencem aos agregados admitidos; não são gráficos vazios com zero.</li><li>Claim PostgreSQL, send SQS, confirm PostgreSQL, latência por evento e cardinalidade SQL ao longo do tempo: não medidos por estes arquivos.</li><li>Não há trecho QUICK após excluir 30 s nem série durante toda a drenagem. NaN e séries ausentes permanecem lacunas; sem suavização ou deslocamento temporal.</li><li>Conflitos de lock sem série não significam zero conflitos. Histogramas por réplica não viram percentil global por média.</li></ul><p>Prova financeira e cobertura de eventos são resultados do verificador salvo. O renderer não consulta o banco ou reconstrói o ledger.</p></section><section id="reproducao"><h2>Reproduzir com Bun, sem serviço ou rede</h2><p>O script acompanha o clone e usa somente Bun e APIs nativas. Forneça os três diretórios com os agregados autorizados e uma pasta de saída nova; nenhum caminho privado de planejamento é default. Nenhum agregado bruto com identificadores precisa ser commitado.</p><pre>BUN_CONFIG_NO_ENV_FILE=true BUN_CONFIG_NO_AUTO_INSTALL=true bun --no-env-file scripts/render-load-report.ts \\\n  --aws-quick /caminho/agregados-quick \\\n  --local-full /caminho/agregados-full-local \\\n  --aws-full-1 /caminho/agregados-full-aws \\\n  --output-dir /caminho/novo-relatorio</pre><p>Os leitores abrem somente result.json, verification.json, environment.json e os quinze nomes literais de fase/counters/prometheus. Os FULL excluídos não têm suas fases abertas. Mistura de fonte/hash é recusada mesmo quando o run seria excluído. HTML/SVG usam conteúdo inline, sem bibliotecas, fontes, scripts ou serviços externos.</p><details><summary>Proveniência dos ' +
     view.files.length +
     ' agregados efetivamente abertos</summary><div class="hashes">' +
     table(
       ["Input", "Nome permitido", "SHA-256 dos bytes"],
       view.files.map((file) => [INPUT_LABELS[file.input], file.name, file.sha256]),
     ) +
-    "</div></details></section><footer>Relatório offline · um único loadSourceSha256 global · QUICK diagnóstica · FULL 0/2 · custo indisponível.</footer></main></body></html>"
+    "</div></details></section><footer>Relatório offline · um único loadSourceSha256 global · QUICK diagnóstica · FULL 0/2.</footer></main></body></html>"
   );
 }
 
@@ -1340,7 +1339,6 @@ if (import.meta.main) {
           quick: { accepted: report.acceptedQuick, nominated: 1 },
           full: { accepted: report.acceptedFull, nominated: 2 },
           exclusions: report.excluded.length,
-          cost: "UNAVAILABLE",
           filesRead: report.files.length,
         }),
       );

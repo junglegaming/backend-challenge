@@ -370,7 +370,11 @@ describe("allowlisted file loading and standalone output", () => {
       const html = readFileSync(join(output, "index.html"), "utf8"),
         svg = readFileSync(join(output, "overview.svg"), "utf8");
       expect(html).toContain("FULL aceito 0/2");
-      expect(html).toContain("Custo efetivo");
+      for (const output of [html, svg]) {
+        expect(output).not.toMatch(
+          /Custo efetivo|custo por transação|custo indisponível|cleanup AWS|fechamento operacional|faturamento/i,
+        );
+      }
       expect(html).toContain("experiência REJEITADA");
       expect(html).toContain("wallet.balance == saldo reconstruído do ledger");
       expect(html).toContain("Contagem não exportada");

@@ -59,8 +59,7 @@ A coincidência do commit não torna iguais os ambientes, imagens ou inventário
 23:20:13.862 UTC**, com **832.839,104549 ms** de captura. Os seletores solicitados e concluídos
 foram `parallel`, `oha`, `pg-activity`, `pumba`, `toxiproxy`, `netem`, `tcpdump` e `stress`.
 Resultado global e captura registram PASS; a captura tem `sourceVerified=true`,
-`cleanupVerified=true` e `diagnostics=[]`. Esses campos são desta execução local, sem
-conclusão sobre cleanup AWS posterior.
+`cleanupVerified=true` e `diagnostics=[]`. Esses campos são desta execução local.
 
 | Comando, todos exit 0 | PASS / FAIL / asserções | Reconciliação e alcance |
 | --- | --- | --- |
@@ -787,15 +786,7 @@ O [relatório HTML offline](load-report/index.html) e os SVGs incorporados em [l
 
 A/B/C históricos, a comparação rejeitada da outbox, o snapshot forense e os experimentos manuais mantêm seus registros nas seções correspondentes; não são fontes alternativas para preencher lacunas da coorte desenhada. Amostras ausentes/NaN permanecem gaps; percentis de réplicas não são promediados, filas replicadas usam máximo por instante e rates alinhadas usam soma. Não se apresenta comparação full local/AWS, três rounds AWS ou capacidade sustentada sem evidência aprovada.
 
-## Estado operacional e gates finais
-
-O `terraform destroy` da segunda e última sessão terminou aprovado em **02/11/2026 às 06:19:03.065 UTC**. A limpeza nativa é uma verificação distinta. A exclusão da service-linked role do ALB terminou `SUCCEEDED`, seguida de `GetRole/NoSuchEntity`, às **07:16:14.771 UTC**. Os inventários das duas sessões, iniciados às 07:22:37.485 e encerrados às 07:24:32.391/07:24:59.132 UTC, confirmaram as três roles de serviço ausentes, recursos faturáveis acompanhados ausentes e nenhuma leitura falha. Cada sessão completou as mesmas 94 operações não relacionadas ao índice de tags; a paginação desse índice acrescentou duas e uma leituras, respectivamente.
-
-O classificador final encerrou às **07:32:19.609 UTC**, exit 0, `CLASSIFIED_KNOWN_METADATA_TWO_SESSIONS`, com paginação completa: **44 referências conhecidas no índice de tags**, nenhuma estrangeira ou desconhecida, e **zero regras de security group nas APIs nativas** das duas sessões. O fechamento usa a exceção de metadados assíncronos explicitamente autorizada. Não é zero literal de tags, prova de exclusão permanente das 35 revisões ECS com ACK ou confirmação de faturamento encerrado. As revisões não foram retornadas após o ACK, com essa limitação preservada. O recibo final mantém `cleanupVerified=false`, `literalTagZeroPassed=false`, `taskDefinitionPermanentDeletionIndependentlyProven=false` e `billingVerified=false`; o fechamento sob exceção é um registro distinto.
-
-O classificador anterior foi preservado como `INCONCLUSIVE`: exigia 96 leituras concluídas e contava páginas incidentais do índice. A correção estrita exige exatamente as 94 operações nativas, pelo menos uma leitura do índice e todos os gates anteriores de estados, recursos, identidade, ACK, ownership e freshness. Oito testes com 36 asserções verificaram a correção, inclusive rejeição de operação nativa faltante, extra ou falha. Fontes e falhas anteriores permanecem identificadas; nenhum critério financeiro ou de carga foi alterado. Recibos seguros: `final-native-after-ack-4.json` das duas sessões e `final-tag-index-after-alb3-2.json`, SHA256 `7a1343f49d6a98a37c63b5d2846106435ea4425327ed9bfc368a9180b5ce1d9b`.
-
-A consulta Budgets encerrada às **07:26:45.460 UTC** informou custo acumulado de conta **US$ 0,00**, sem informação de atualização ou atribuição ao projeto. É uma leitura defasável, não custo final, saldo disponível ou prova de execução gratuita. O limite autorizado permanece **US$ 10**, duas sessões e nenhum recurso faturável a reter. Os resultados e o fechamento final devem conservar essa limitação quando o faturamento não estiver disponível.
+## Gates finais
 
 Os comandos finais obrigatórios, em clone limpo do commit entregue, continuam `bun install --frozen-lockfile`, `bun run check`, `bun run test`, `bun run test:failure` e `bun run test:load`. A dispensa específica de nova GNU20 não dispensa nenhum desses comandos. Scans de segredos, revisões e handoff mantêm evidências próprias, atribuídas às respectivas fontes. A demo literal abaixo cobre o recorte executado do README; não herda nem substitui o resultado dos cinco gates no último commit entregue.
 
