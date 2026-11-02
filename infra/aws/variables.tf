@@ -85,8 +85,8 @@ variable "stop_at" {
   type = string
   validation {
 
-    condition     = try(timecmp(var.stop_at, timeadd(var.session_started_at, "${16200 - var.previous_runtime_seconds}s")) <= 0 && timecmp(var.stop_at, timeadd(var.session_started_at, "1200s")) > 0 && can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", var.stop_at)), false)
-    error_message = "The fixed stop deadline must respect the cumulative 270-minute budget. Never reset it on reapply."
+    condition     = try(timecmp(var.stop_at, timeadd(var.session_started_at, "${21000 - var.previous_runtime_seconds}s")) <= 0 && timecmp(var.stop_at, timeadd(var.session_started_at, "1200s")) > 0 && can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", var.stop_at)), false)
+    error_message = "The fixed stop deadline must respect the explicitly extended cumulative 350-minute budget. Never reset it on reapply."
 
   }
 

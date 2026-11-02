@@ -1,0 +1,212 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RegionalServices",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "ecs:*",
+        "ecr:*",
+        "rds:*",
+        "sqs:*",
+        "logs:*",
+        "s3:*",
+        "elasticloadbalancing:*",
+        "servicediscovery:*",
+        "secretsmanager:*",
+        "scheduler:*",
+        "ssm:*",
+        "ssmmessages:*",
+        "kms:DescribeKey",
+        "kms:CreateGrant",
+        "kms:ListAliases",
+        "tag:GetResources"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "CloudMapPrivateDns",
+      "Effect": "Allow",
+      "Action": [
+        "route53:CreateHostedZone",
+        "route53:DeleteHostedZone",
+        "route53:GetHostedZone",
+        "route53:ListHostedZonesByName",
+        "route53:ListResourceRecordSets",
+        "route53:ChangeResourceRecordSets",
+        "route53:GetChange",
+        "route53:AssociateVPCWithHostedZone",
+        "route53:DisassociateVPCFromHostedZone"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ScopedRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PassRole",
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/wagering-load-*",
+        "arn:aws:iam::*:instance-profile/wagering-load-*"
+      ]
+    },
+    {
+      "Sid": "ServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "iam:AWSServiceName": [
+            "ecs.amazonaws.com",
+            "rds.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Identity",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "iam:ListPolicies",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "OnlyPlannedInstanceTypes",
+      "Effect": "Deny",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringNotEquals": {
+          "ec2:InstanceType": "c7i.2xlarge"
+        }
+      }
+    },
+    {
+      "Sid": "OnlyPlannedDatabaseClass",
+      "Effect": "Deny",
+      "Action": ["rds:CreateDBInstance", "rds:ModifyDBInstance"],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEqualsIfExists": {
+          "rds:DatabaseClass": "db.m7g.2xlarge"
+        }
+      }
+    },
+    {
+      "Sid": "NoCostlyOrPublicExtras",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateNatGateway",
+        "ec2:AllocateAddress",
+        "ec2:PurchaseReservedInstancesOffering",
+        "rds:PurchaseReservedDBInstancesOffering",
+        "iam:CreateUser",
+        "iam:CreateAccessKey",
+        "organizations:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadBudgetsInThisAccount",
+      "Effect": "Allow",
+      "Action": "budgets:ViewBudget",
+      "Resource": "arn:aws:budgets::${AWS_ACCOUNT_ID}:budget/*"
+    },
+    {
+      "Sid": "ReadRequiredEc2AppliedQuota",
+      "Effect": "Allow",
+      "Action": "servicequotas:GetServiceQuota",
+      "Resource": "arn:aws:servicequotas:us-east-2:${AWS_ACCOUNT_ID}:ec2/L-1216C47A",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ListRegionalAppliedQuotas",
+      "Effect": "Allow",
+      "Action": "servicequotas:ListServiceQuotas",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyThreeRequiredServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing"
+      ]
+    },
+    {
+      "Sid": "ReadRegionalQuotaUsage",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:GetMetricStatistics", "eks:ListClusters"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReadSameReservedRoleNamesWhenAbsent",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/AWSServiceRoleForECS",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/AWSServiceRoleForRDS",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/AWSServiceRoleForElasticLoadBalancing"
+      ]
+    },
+    {
+      "Sid": "CleanupOnlyThreeCampaignCreatedServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": ["iam:DeleteServiceLinkedRole", "iam:GetServiceLinkedRoleDeletionStatus"],
+      "Resource": [
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+        "arn:aws:iam::${AWS_ACCOUNT_ID}:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing"
+      ]
+    }
+  ]
+}

@@ -9,6 +9,9 @@ O provider usa exclusivamente o profile `wagering-load`, com a conta esperada em
 Não use outro profile, região, sessão Builder ID ou ferramenta AWS MCP. Não leia arquivos de
 credenciais nem imprima secrets, tokens, planos completos ou conteúdo do state. Não altere
 organização, SCP ou configuração da conta para executar esta campanha.
+`operator-policy.template.json` contém as 15 permissões/grupos de permissões autorizados, com
+`${AWS_ACCOUNT_ID}` como placeholder; sua presença não instala nem amplia permissões. A política
+não promove o grant temporário usado no diagnóstico de envio de eventos.
 
 ## Rede e dimensionamento
 
@@ -28,14 +31,16 @@ experimento; não são uma implantação de produção.
 Use Terraform **1.17.1**. O lockfile fixa `hashicorp/aws` em **6.71.0** e permanece versionado.
 
 ```bash
-terraform -chdir=infra/aws init -backend=false -input=false
+terraform -chdir=infra/aws init -backend=false -input=false -lockfile=readonly
 terraform -chdir=infra/aws fmt -check -recursive
 terraform -chdir=infra/aws validate
 terraform -chdir=infra/aws test
 ```
 
-Os quatro testes usam `mock_provider`, sem chamadas AWS: rede privada/serviços parados, recusa de
-startup sem gates, recusa de extensão do prazo cumulativo e topologia 3/3/2 após os gates.
+Os seis testes usam `mock_provider`, sem chamadas AWS: rede privada/serviços parados, recusa de
+startup sem gates, prazo cumulativo, fronteira de 350 minutos e recusa de um segundo adicional,
+além da topologia 3/3/2 após os gates. Eles verificam a chave SDK `DbInstanceIdentifier` no target
+RDS, API restrita aos metadados das três filas e ausência do grant temporário de envio de eventos.
 Eles não demonstram que um schedule executou uma parada real. O atributo de custom health do
 Cloud Map conserva a integração privada com ECS; o provider fixado avisa que seu threshold é sempre 1.
 
@@ -57,6 +62,9 @@ sensível. Não use os defaults locais do Compose. O RDS gerencia sua senha no S
 forneça senha no Terraform nem publique seu valor. Execution roles injetam os secrets necessários,
 separadas das task roles. A API só lê URL/atributos das três filas, conforme exceção de readiness
 autorizada em D26. Consumer e worker têm operações de mensagem distintas, nas filas exatas.
+Apenas a fila de eventos usa FIFO de alta vazão: `deduplication_scope=messageGroup` e
+`fifo_throughput_limit=perMessageGroupId`, configuração retida após throttling observado. As filas
+de requests e DLQ conservam seus atributos.
 
 O Dockerfile AWS do Keycloak copia o mesmo realm de `docker/keycloak/`; placeholders são resolvidos
 com secrets na importação. O bundle público de CAs RDS de Ohio está em
@@ -73,11 +81,11 @@ acesso a GitHub, Docker Hub ou Quay para instalar ferramentas durante o boot.
 
 ## Ordem de operação e orçamento
 
-O limite é **270 minutos cumulativos**, contando provisioning, falhas e cleanup, em **até duas
+O limite explicitamente estendido é **350 minutos cumulativos**, contando provisioning, falhas e cleanup, em **até duas
 sessões**. O alerta AWS Budgets de US$ 10 não interrompe gastos e deve existir antes de aplicar.
 Mantenha o ledger externo desde antes do primeiro apply até a remoção verificada, sem reiniciar
 o saldo em reapplies. `session_started_at`, `previous_runtime_seconds` e `stop_at` são fixos na
-sessão. O prazo não pode superar `session_started_at + 270min - runtime anterior`.
+sessão. O prazo não pode superar `session_started_at + 350min - runtime anterior`.
 
 1. Depois da revisão focada, confirme identidade com `aws sts get-caller-identity --profile
    wagering-load --region us-east-2`, validade das credenciais, quotas e alerta de orçamento. Uma
@@ -100,8 +108,7 @@ sessão. O prazo não pode superar `session_started_at + 270min - runtime anteri
    database nova, nesta ordem fixa. Pare os serviços antes de trocar `run_database_name`, migre e
    confirme filas vazias antes de reiniciar. Não altere `db_name` do recurso RDS entre rodadas.
    Preserve cada rodada, inclusive falhas. Não repita para escolher uma rodada favorável.
-7. Reserve operacionalmente 40 minutos do saldo para parar admissão, coletar e destruir, buscando
-   finalizar com pelo menos os 20 minutos obrigatórios ainda livres. Não inicie uma etapa que não
+7. Reserve operacionalmente 20 minutos do saldo para parar admissão, coletar e destruir. Não inicie uma etapa que não
    caiba. Credenciais inválidas com stack ativa exigem aviso imediato; não troque identidade.
 
 Os schedules têm precisão de um minuto, e a parada do RDS é assíncrona. Eles são a proteção de

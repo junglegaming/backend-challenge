@@ -52,7 +52,7 @@ locals {
     {
       database = {
         arn = "arn:aws:scheduler:::aws-sdk:rds:stopDBInstance", input = jsonencode({
-          DBInstanceIdentifier = aws_db_instance.load.identifier
+          DbInstanceIdentifier = aws_db_instance.load.identifier
         })
       },
       runner = {

@@ -22,6 +22,8 @@ resource "aws_sqs_queue" "events" {
   name                        = "wagering-events.fifo"
   fifo_queue                  = true
   content_based_deduplication = false
+  deduplication_scope         = "messageGroup"
+  fifo_throughput_limit       = "perMessageGroupId"
 
 }
 locals {
