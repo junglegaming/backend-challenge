@@ -1,6 +1,264 @@
-import { mkdir, open, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { verifyLoadManifest } from "../load/target";
+
+function parseSafeSdkDiagnostic(stderr: string) {
+  const lines = stderr.split("\n");
+  const allowedCommands = [
+    "GetQueueUrlCommand",
+    "GetQueueAttributesCommand",
+    "ReceiveMessageCommand",
+    "DeleteMessageCommand",
+    "SendMessageCommand",
+    "SendMessageBatchCommand",
+    "ChangeMessageVisibilityCommand",
+    "UNKNOWN",
+  ];
+  const allowedNames = [
+    "RequestThrottled",
+    "Throttling",
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "AccessDenied",
+    "AccessDeniedException",
+    "AWS.SimpleQueueService.AccessDenied",
+    "ReceiptHandleIsInvalid",
+    "InvalidParameterValue",
+    "InvalidAddress",
+    "InvalidSecurity",
+    "QueueDoesNotExist",
+    "AWS.SimpleQueueService.NonExistentQueue",
+    "OverLimit",
+    "KmsAccessDenied",
+    "KmsThrottled",
+    "ServiceUnavailable",
+    "InternalError",
+    "InvalidClientTokenId",
+    "ExpiredToken",
+    "ExpiredTokenException",
+    "CredentialsProviderError",
+    "TimeoutError",
+    "AbortError",
+    "TypeError",
+    "Error",
+    "UNKNOWN",
+  ];
+  const failure = (prefix: string) => {
+    const raw = lines.find((line) => line.startsWith(prefix));
+    if (raw && raw.length < 1024) {
+      try {
+        const v = JSON.parse(raw.slice(prefix.length));
+        if (
+          v &&
+          typeof v === "object" &&
+          Object.keys(v).sort().join(",") === "attempts,httpStatus,name,operation" &&
+          allowedCommands.includes(v.operation) &&
+          allowedNames.includes(v.name) &&
+          (v.httpStatus === null ||
+            (Number.isInteger(v.httpStatus) && v.httpStatus >= 100 && v.httpStatus <= 599)) &&
+          (v.attempts === null ||
+            (Number.isInteger(v.attempts) && v.attempts >= 1 && v.attempts <= 10))
+        )
+          return v;
+      } catch {}
+    }
+    return null;
+  };
+  const firstError = failure("WAGERING_SAFE_SDK_FAILURE ");
+  const fatalError = failure("WAGERING_SAFE_SDK_FATAL ");
+  const rawStats = lines
+    .filter((line) => line.startsWith("WAGERING_EVENT_ACK_RETRY_STATS "))
+    .at(-1);
+  let eventAcks = null;
+  if (rawStats && rawStats.length < 1024) {
+    try {
+      const v = JSON.parse(rawStats.slice("WAGERING_EVENT_ACK_RETRY_STATS ".length));
+      if (
+        v &&
+        typeof v === "object" &&
+        Object.keys(v).sort().join(",") ===
+          "acknowledged,attempts,backoffMs,calls,deadlineStopped,exhausted,failed,maxAttemptsObserved,retries,retryableErrors" &&
+        Object.values(v).every((x) => Number.isSafeInteger(x) && (x as number) >= 0) &&
+        v.maxAttemptsObserved <= 7 &&
+        v.attempts <= v.calls * 7 &&
+        v.retries <= v.calls * 6 &&
+        v.backoffMs <= v.calls * 2550 &&
+        v.acknowledged + v.failed <= v.calls
+      )
+        eventAcks = v;
+    } catch {}
+  }
+  return {
+    sdkDiagnosticReady: lines.includes("WAGERING_SAFE_SDK_READY"),
+    firstError,
+    fatalError,
+    eventAckRetryReady: lines.includes("WAGERING_EVENT_ACK_RETRY_READY"),
+    eventAcks,
+  };
+}
+
+async function waitForPrometheusReady(cutoff: number, prometheusName: string) {
+  const began = Date.now(),
+    end = Math.min(began + 45_000, cutoff);
+  const diagnostic = {
+    passed: false,
+    polls: 0,
+    elapsedMs: 0,
+    last: null as null | {
+      containerRunning: boolean | null;
+      readyStatus: number | null;
+      queryStatus: number | null;
+      status: string;
+      errorType: string;
+      resultCount: number | null;
+      upCount: number | null;
+      errorName: string | null;
+    },
+  };
+  while (Date.now() < end) {
+    diagnostic.polls++;
+    const last = {
+      containerRunning: null as boolean | null,
+      readyStatus: null as number | null,
+      queryStatus: null as number | null,
+      status: "NO_RESPONSE",
+      errorType: "NONE",
+      resultCount: null as number | null,
+      upCount: null as number | null,
+      errorName: null as string | null,
+    };
+    try {
+      const child = Bun.spawn(
+        ["docker", "inspect", "--format", "{{.State.Running}}", prometheusName],
+        {
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "ignore",
+          timeout: Math.max(1, Math.min(2500, end - Date.now())),
+          killSignal: "SIGKILL",
+        },
+      );
+      const boundedState = async () => {
+        const reader = child.stdout.getReader();
+        const parts: Uint8Array[] = [];
+        let bytes = 0;
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            bytes += chunk.value.length;
+            if (bytes > 16) {
+              child.kill("SIGKILL");
+              throw new Error();
+            }
+            parts.push(chunk.value);
+          }
+          return new TextDecoder().decode(Buffer.concat(parts));
+        } finally {
+          reader.releaseLock();
+        }
+      };
+      const [state, code] = await Promise.all([boundedState(), child.exited]);
+      last.containerRunning = code === 0 && state.trim() === "true";
+      if (!last.containerRunning) {
+        diagnostic.last = last;
+        break;
+      }
+      const signal = AbortSignal.timeout(Math.max(1, Math.min(2500, end - Date.now())));
+      const ready = await fetch("http://127.0.0.1:9090/-/ready", { redirect: "manual", signal });
+      last.readyStatus = ready.status;
+      await ready.body?.cancel();
+      const query = await fetch(
+        "http://127.0.0.1:9090/api/v1/query?" +
+          new URLSearchParams({ query: 'up{job="wagering"}' }),
+        { redirect: "manual", signal },
+      );
+      last.queryStatus = query.status;
+      const parts: Uint8Array[] = [];
+      let bytes = 0;
+      if (query.body) {
+        const reader = query.body.getReader();
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            bytes += chunk.value.length;
+            if (bytes > 65_536) {
+              const error = new Error();
+              error.name = "ResponseBodyLimit";
+              throw error;
+            }
+            parts.push(chunk.value);
+          }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+        }
+      }
+      let value: any;
+      try {
+        value = JSON.parse(new TextDecoder().decode(Buffer.concat(parts)));
+      } catch {
+        last.status = "INVALID_JSON";
+      }
+      if (value) {
+        last.status = ["success", "error"].includes(value.status) ? value.status : "UNKNOWN";
+        last.errorType =
+          value.errorType === undefined
+            ? "NONE"
+            : [
+                  "bad_data",
+                  "timeout",
+                  "canceled",
+                  "execution",
+                  "internal",
+                  "unavailable",
+                  "not_found",
+                ].includes(value.errorType)
+              ? value.errorType
+              : "UNKNOWN";
+        if (
+          value.data?.resultType === "vector" &&
+          Array.isArray(value.data.result) &&
+          value.data.result.length <= 1000
+        ) {
+          last.resultCount = value.data.result.length;
+          last.upCount = value.data.result.filter(
+            (series: any) => Array.isArray(series?.value) && series.value[1] === "1",
+          ).length;
+        }
+      }
+      diagnostic.passed =
+        last.readyStatus === 200 &&
+        last.queryStatus === 200 &&
+        last.status === "success" &&
+        last.resultCount !== null;
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "UNKNOWN";
+      last.errorName = [
+        "Error",
+        "TypeError",
+        "AbortError",
+        "TimeoutError",
+        "SyntaxError",
+        "ResponseBodyLimit",
+      ].includes(name)
+        ? name
+        : "UNKNOWN";
+    }
+    diagnostic.last = last;
+    if (diagnostic.passed) break;
+    const remaining = end - Date.now();
+    if (remaining > 0) await Bun.sleep(Math.min(500, remaining));
+  }
+  diagnostic.elapsedMs = Date.now() - began;
+  return diagnostic;
+}
+
+function parseSafePrometheusStatus(stderr: string): number | null {
+  const match = /^error: Prometheus returned ([1-5][0-9]{2})$/m.exec(stderr);
+  return match ? Number(match[1]) : null;
+}
 
 // Invoked through SSM inside the private EC2 runner. Not a test/CI prerequisite.
 interface RunnerManifest {
@@ -135,9 +393,12 @@ const execution = {
   primaryFailure: null as null | { stage: string; code: string },
   cleanupFailures: [] as { stage: string; code: string }[],
   collectionFailures: [] as { stage: string; code: string }[],
+  prometheusReady: null as null | Awaited<ReturnType<typeof waitForPrometheusReady>>,
   load: null as null | {
     exitCode: number;
     runtimeGuardrailReached: boolean;
+    sdkDiagnostic: ReturnType<typeof parseSafeSdkDiagnostic>;
+    prometheusHttpStatus: number | null;
     lines: string[];
     failureLocations: string[];
   },
@@ -197,6 +458,7 @@ try {
     prometheusConfig,
     `global:\n  scrape_interval: 5s\n  scrape_timeout: 3s\nscrape_configs:\n  - job_name: wagering\n    dns_sd_configs:\n      - names: [api.${manifest.namespace}, consumer.${manifest.namespace}, worker.${manifest.namespace}]\n        type: A\n        port: 3000\n        refresh_interval: 5s\n    relabel_configs:\n      - source_labels: [__meta_dns_name]\n        regex: '(api|consumer|worker)\\..*'\n        replacement: '$1'\n        target_label: role\n`,
   );
+  await chmod(prometheusConfig, 0o644); // Non-secret scrape YAML must be readable by Prometheus uid65534.
   prometheusAttempted = true;
   await execute([
     "docker",
@@ -220,6 +482,13 @@ try {
     "--storage.tsdb.path=/prometheus",
     "--web.listen-address=127.0.0.1:9090",
   ]);
+  execution.stage = "prometheus-ready";
+  execution.prometheusReady = await waitForPrometheusReady(cutoff, prometheusName);
+  if (!execution.prometheusReady.passed) {
+    const error = new Error();
+    error.name = "PrometheusPreloadGate";
+    throw error;
+  }
   const loadEnv = {
     ...env,
     LOAD_TARGET: "remote",
@@ -278,6 +547,8 @@ try {
   execution.load = {
     exitCode: code,
     runtimeGuardrailReached: terminated,
+    sdkDiagnostic: parseSafeSdkDiagnostic(err),
+    prometheusHttpStatus: parseSafePrometheusStatus(err),
     lines: (out + err)
       .split("\n")
       .filter((line) =>
@@ -353,6 +624,11 @@ try {
       unit: execution.unit,
       stage: execution.stage,
       passed: execution.passed,
+      prometheusReady: execution.prometheusReady,
+      load: {
+        sdkDiagnostic: execution.load?.sdkDiagnostic ?? null,
+        prometheusHttpStatus: execution.load?.prometheusHttpStatus ?? null,
+      },
       primaryFailure: execution.primaryFailure,
       cleanupFailures: execution.cleanupFailures,
       collectionFailures: execution.collectionFailures,

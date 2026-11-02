@@ -27,7 +27,8 @@ afterAll(async () => {
 
 test("all load commands have one financial effect, atomic events, processed inbox and consistent wallets", async () => {
   const connection = (await h.database.orm).em.getConnection();
-  const [counts] = await connection.execute<
+  const consumer = process.env.LOAD_EVENT_CONSUMER;
+  const [row] = await connection.execute<
     {
       transactions: number;
       processed: number;
@@ -37,8 +38,12 @@ test("all load commands have one financial effect, atomic events, processed inbo
       inbox: number;
       unfinished_inbox: number;
       duplicate_effects: number;
+      requests: number;
+      events: number;
+      unknown: number;
     }[]
-  >(`SELECT
+  >(
+    `SELECT
     (SELECT count(*)::int FROM wager_transactions) AS transactions,
     (SELECT count(*)::int FROM wager_transactions WHERE status = 'PROCESSED') AS processed,
     (SELECT count(*)::int FROM wallet_ledger_entries) AS entries,
@@ -47,23 +52,22 @@ test("all load commands have one financial effect, atomic events, processed inbo
     (SELECT count(*)::int FROM inbox_messages) AS inbox,
     (SELECT count(*)::int FROM inbox_messages WHERE processed_at IS NULL) AS unfinished_inbox,
     (SELECT count(*)::int FROM (SELECT transaction_id FROM wallet_ledger_entries
-      GROUP BY transaction_id HAVING count(*) <> 1) duplicates) AS duplicate_effects`);
-  if (!counts) throw new Error("Missing load financial counts");
+      GROUP BY transaction_id HAVING count(*) <> 1) duplicates) AS duplicate_effects,
+    (SELECT count(*)::int FROM inbox_messages
+      WHERE consumer_name = 'wager-transactions-processor') AS requests,
+    (SELECT count(*)::int FROM inbox_messages WHERE consumer_name = ?) AS events,
+    (SELECT count(*)::int FROM inbox_messages
+      WHERE consumer_name NOT IN ('wager-transactions-processor', ?)) AS unknown`,
+    [consumer ?? null, consumer ?? null],
+  );
+  if (!row) throw new Error("Missing load financial counts");
+  const { requests, events, unknown, ...counts } = row;
   let remoteInboxes:
     | { total: number; requests: number; events: number; unknown: number }
     | undefined;
   if (remote) {
-    const consumer = process.env.LOAD_EVENT_CONSUMER;
     if (!consumer) throw new Error("Missing event consumer identity");
-    const [inbox] = await connection.execute<
-      { requests: number; events: number; unknown: number }[]
-    >(
-      `SELECT count(*) FILTER (WHERE consumer_name = 'wager-transactions-processor')::int AS requests,
-       count(*) FILTER (WHERE consumer_name = ?)::int AS events,
-       count(*) FILTER (WHERE consumer_name NOT IN ('wager-transactions-processor', ?))::int AS unknown
-       FROM inbox_messages`,
-      [consumer, consumer],
-    );
+    const inbox = { requests, events, unknown };
     expect(inbox?.unknown).toBe(0);
     expect(counts.inbox).toBe((inbox?.requests ?? 0) + (inbox?.events ?? 0));
     if (inbox) remoteInboxes = { total: counts.inbox, ...inbox };

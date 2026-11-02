@@ -24,7 +24,7 @@ export class EventConsumer {
   private readonly inbox = new SqlInboxStore();
   constructor(
     private readonly uow: UnitOfWork,
-    private readonly transport: SqsTransport,
+    private readonly transport: Pick<SqsTransport, "receive" | "acknowledge">,
     private readonly consumerName: string,
   ) {}
 

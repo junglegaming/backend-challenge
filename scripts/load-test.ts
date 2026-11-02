@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { LoadEventObserver } from "../load/event-observer";
+import { FATAL_SENTINEL, LoadEventObserver } from "../load/event-observer";
 import { completeEventCoverage, eventCoverage } from "../load/event-verification";
 import { LoadFixtures, loadCommand, parallelEach, Workload } from "../load/model";
 import { healthyScrapeTimestamps, instant, phaseMetrics } from "../load/prometheus";
@@ -250,6 +250,7 @@ try {
       new MikroOrmUnitOfWork(database),
       transport,
       `load-events:${runId}`,
+      cancellation.signal,
     );
   }
   const drain = async () => {
@@ -830,6 +831,10 @@ try {
   });
   console.log(`Load passed: ${runDir}/result.json`);
 } catch (error) {
+  // Preserve the propagated SDK failure separately from an earlier recovered first sentinel.
+  try {
+    console.error(FATAL_SENTINEL + JSON.stringify(observer?.sdkFailureFor(error) ?? null));
+  } catch {}
   await write("failure", {
     runId,
     passed: false,
