@@ -689,8 +689,10 @@ porta escolhida na aba **Portas** do VS Code se necessário. Cada página també
 `file://` quando o navegador tem acesso à árvore completa; o portal do desktop pode
 compartilhar só o arquivo aberto e impedir os links vizinhos. As páginas ficam
 em português, nos temas claro/escuro e em tela estreita. Os
-gráficos são SVG inline: o HTML é autossuficiente, sem JavaScript ou bibliotecas
-externas. As fontes de cada campanha permanecem visíveis, sem juntar fases de
+gráficos são SVG inline: o HTML é autossuficiente, com JavaScript local para o
+menu de aparência Automático/Claro/Escuro na barra superior e sem bibliotecas externas. Pelo
+servidor, os links para Markdown abrem documentos formatados com a mesma barra e a preferência
+de tema salva; títulos, tabelas, código e âncoras permanecem navegáveis. As fontes de cada campanha permanecem visíveis, sem juntar fases de
 fontes diferentes.
 
 As páginas FULL incluem quantis HTTP por fase, vazão observada, descartes do

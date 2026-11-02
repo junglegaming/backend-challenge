@@ -962,6 +962,63 @@ local confirmou esse comportamento; o valor explícito foi mantido e comentado,
 conforme a [issue do provider](https://github.com/hashicorp/terraform-provider-aws/issues/44285).
 O aviso não foi resolvido. Não houve `plan`, `apply` ou chamada à AWS nesta revisão.
 
+### Navegação, seleção de tema e visualizador de Markdown
+
+A revisão seguinte de 02/11/2026 acrescentou uma barra superior compartilhada pelos
+cinco HTML e pelos documentos Markdown servidos no preview. Os links **Início**,
+**README**, **Arquitetura** e **Verificação** usam caminhos relativos adequados a cada HTML;
+no visualizador, apontam para a raiz HTTP. Início retorna à central de relatórios,
+e os atalhos redundantes abaixo da barra foram removidos do índice e do visualizador
+Markdown, incluindo README e Verificação. O botão de aparência oferece Automático,
+Claro e Escuro, com preferência salva no navegador, indicação da escolha e operação
+por teclado. A impressão fica clara e oculta a barra.
+
+O preview passou a renderizar Markdown usando o parser nativo do Bun 1.4.3, sem
+dependências externas: títulos, tabelas, código, seções expansíveis e âncoras
+explícitas continuam disponíveis. Os IDs dos títulos preservam os acentos usados
+pelos links existentes. O HTML resultante passa por uma lista de elementos e
+atributos permitidos; as URLs são normalizadas e limitadas a protocolos permitidos.
+O script de tema é constante e autorizado pelo hash exato na CSP. Fontes e
+configurações citadas pelos documentos continuam consultáveis como texto ou JSON,
+com acesso limitado aos caminhos públicos explicitamente permitidos.
+
+O `bun run check` desta versão passou: **212 testes unitários, zero falhas e 1.771
+asserções**, além de lint e tipos sem erros. O recorte dos relatórios passou **31
+testes e 140 asserções**, e os cinco testes do preview passaram **53 asserções**.
+Os novos casos cobrem a renderização Markdown, links relativos, âncoras acentuadas
+e duplicadas, HTML ativo, esquemas de URL ofuscados por entidades e a permissão
+estrita dos arquivos de configuração. A revisão independente confirmou ainda a
+recusa de 14 casos de diretórios, caminhos privados, traversal e symlinks para
+conteúdo privado ou fora da raiz.
+
+O Playwright pelo serviço `docs` do Compose aprovou **25 cenários** dos cinco HTML
+em desktop, mobile e tela intermediária, em claro/escuro, cinco verificações de persistência entre páginas
+e **15 verificações de fallback**: armazenamento bloqueado em HTTP e `file://`,
+e leitura com JavaScript desativado. Foram conferidos os três modos de tema,
+mudanças dinâmicas do sistema, navegação por teclado, fechamento do menu, foco,
+impressão, ausência de overflow e os controles anteriores da arquitetura. Textos,
+links e SVGs preexistentes permanecem iguais ao checkpoint anterior, excluindo a
+nova barra, a remoção da navegação redundante e a atualização explicativa do rodapé
+do índice. Local e AWS continuam
+reproduzíveis byte a byte a partir de seus `campaign.json`.
+
+O visualizador também passou uma campanha dirigida de navegação: seis destinos
+Markdown descobertos a partir dos HTML, sete âncoras Markdown clicadas com seção
+visível e **88 cliques reais** nos quatro links da barra, pelas 11 páginas, em desktop
+e mobile. Os 183 links dos seis Markdown corresponderam a **72 URLs internas e 65
+recursos públicos**, todos com resposta HTTP 200. Os oito cenários visuais de README
+e relatório AWS cobriram claro/escuro e desktop/mobile, incluindo tabelas, código,
+seções expansíveis, troca de tema, impressão e retorno ao relatório HTML. Outras duas capturas
+conferiram o menu aberto: no mobile ele fica abaixo da barra, sem encobrir os quatro
+links; clique fora, segundo clique e Escape com retorno de foco passaram. Nenhum
+erro JavaScript, erro de console ou pedido de recurso externo foi observado.
+
+O container `wagering-docs-1` permaneceu saudável. Esses checks exercitam somente a
+documentação: não repetem os gates financeiros com containers ou campanhas de carga,
+nem acessam AWS. Os HTML continuam autossuficientes para `file://`; a renderização
+dos arquivos `.md` depende do servidor. O acesso pelo portal do navegador do host
+continua fora do ambiente inspecionado pelo Playwright.
+
 <details>
 <summary>Gates e demo históricos anteriores: 3fa0f86 e 4f304d6</summary>
 

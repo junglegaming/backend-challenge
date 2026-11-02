@@ -1,7 +1,22 @@
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, relative, resolve, sep } from "node:path";
+import { docsMarkdownCsp, renderDocsMarkdown } from "./render-docs-markdown";
 
-const rootFiles = new Set(["README.md", "ARCHITECTURE.md", "compose.yaml"]);
+const publicFiles = new Set([
+  "README.md",
+  "ARCHITECTURE.md",
+  "compose.yaml",
+  "Dockerfile",
+  "package.json",
+  ".github/workflows/ci.yml",
+  "mikro-orm.config.ts",
+  "load/target.ts",
+  "load/source-files.ts",
+  "docker/aws/us-east-2-bundle.crt",
+  "docker/keycloak/wagering-realm.json",
+  "docker/prometheus/prometheus.yml",
+  "docker/grafana/dashboards/wagering.json",
+]);
 const textHeaders = {
   "Content-Type": "text/plain; charset=utf-8",
   "Cache-Control": "no-store",
@@ -10,9 +25,9 @@ const textHeaders = {
 const escapeHtml = (value: string) =>
   value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 function publicFile(path: string): boolean {
+  if (publicFiles.has(path)) return true;
   if (path.split("/").some((part) => !part || part.startsWith("."))) return false;
   return (
-    rootFiles.has(path) ||
     /^docs\/.+\.(html|md|svg)$/.test(path) ||
     /^docs\/load-report\/(local|aws)\/campaign\.json$/.test(path) ||
     /^src\/.+\.ts$/.test(path) ||
@@ -36,6 +51,7 @@ export function createDocsHandler(root: string): (request: Request) => Response 
         headers: { ...textHeaders, Allow: "GET, HEAD" },
       });
     const url = new URL(request.url);
+    if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
     if (url.pathname === "/")
       return Response.redirect(new URL("/docs/load-report/index.html", url).href, 302);
     try {
@@ -72,6 +88,19 @@ export function createDocsHandler(root: string): (request: Request) => Response 
         );
       }
       if (!stat.isFile() || !publicFile(actual)) return missing();
+      if (extname(actual) === ".md")
+        return new Response(
+          request.method === "HEAD"
+            ? null
+            : renderDocsMarkdown(readFileSync(canonical, "utf8"), path, url.href),
+          {
+            headers: {
+              ...textHeaders,
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Security-Policy": docsMarkdownCsp,
+            },
+          },
+        );
       const type: Record<string, string> = {
         ".html": "text/html; charset=utf-8",
         ".svg": "image/svg+xml",

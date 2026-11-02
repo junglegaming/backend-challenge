@@ -453,6 +453,8 @@ O serviço `docs` usa a imagem Bun 1.4.3 e monta o checkout somente para leitura
 | Arquitetura visual | <http://localhost:4173/docs/architecture.html> |
 | FULL local | <http://localhost:4173/docs/load-report/local/index.html> |
 | FULL AWS | <http://localhost:4173/docs/load-report/aws/index.html> |
+| README formatado | <http://localhost:4173/README.md> |
+| Decisões de arquitetura | <http://localhost:4173/ARCHITECTURE.md> |
 
 No Dev Container, encaminhe a porta **4173** pela aba **Portas** do VS Code se ela não aparecer automaticamente. O serviço publica a porta somente em loopback. Para escolher outra porta, por exemplo 4174:
 
@@ -460,7 +462,7 @@ No Dev Container, encaminhe a porta **4173** pela aba **Portas** do VS Code se e
 DOCS_HOST_PORT=4174 docker compose --env-file /dev/null -p wagering up -d --wait docs
 ```
 
-Nesse caso, use `http://localhost:4174` e encaminhe 4174 no Dev Container. Alterações nos arquivos ficam disponíveis sem reconstruir a imagem; atualize a página no navegador.
+Nesse caso, use `http://localhost:4174` e encaminhe 4174 no Dev Container. Alterações nos documentos ficam disponíveis sem reconstruir a imagem; atualize a página no navegador.
 
 O perfil opcional `docs` mantém o preview fora das suítes de integração e carga. Para iniciá-lo junto da stack, inclua `docs` em `COMPOSE_PROFILES`, por exemplo `COMPOSE_PROFILES=docs,observability bun run stack:up`. Para parar somente a documentação:
 
@@ -468,4 +470,8 @@ O perfil opcional `docs` mantém o preview fora das suítes de integração e ca
 docker compose --env-file /dev/null -p wagering stop docs
 ```
 
-Como alternativa sem Docker, `bun run docs:preview` inicia o mesmo servidor com Bun no host; aceita `--port 4174`. Use uma forma por porta. Os HTMLs também abrem diretamente por `file://` quando o navegador tem acesso à árvore completa de arquivos; abrir um arquivo isolado pelo portal do desktop pode impedir a navegação pelos links relativos.
+Os relatórios, a arquitetura visual e o visualizador de Markdown compartilham uma barra superior com links para **Início**, **README**, **Arquitetura** e **Verificação**, além de um botão de aparência à direita. **Início** retorna à central de relatórios. O botão de aparência mostra o tema atual e abre as opções **Automático**, **Claro** e **Escuro**. Automático acompanha a preferência do sistema; a escolha manual prevalece e fica salva no navegador, inclusive ao navegar entre as páginas pelo mesmo endereço HTTP. O menu aceita teclado e fecha com Escape ou clique fora. Se o armazenamento do navegador estiver bloqueado, a troca continua funcionando na página aberta; a persistência entre arquivos `file://` depende do navegador. A impressão usa o tema claro e oculta a barra.
+
+Pelo servidor, os links para `.md` abrem documentos formatados, com títulos, tabelas, blocos de código e seções expansíveis. Os endereços e as âncoras dos documentos continuam válidos, incluindo títulos com acentos. Os links relativos permitem ir do relatório para sua documentação e voltar. A renderização usa o parser nativo do Bun, sem bibliotecas externas ou acesso à rede; HTML ativo e URLs executáveis são filtrados. Arquivos de código e configuração continuam disponíveis como texto para consulta.
+
+Como alternativa sem Docker, `bun run docs:preview` inicia o mesmo servidor com Bun no host; aceita `--port 4174`. Use uma forma por porta. Os HTMLs também abrem diretamente por `file://` quando o navegador tem acesso à árvore completa de arquivos; abrir um arquivo isolado pelo portal do desktop pode impedir a navegação pelos links relativos. O visualizador de Markdown depende do servidor; abrir um `.md` diretamente fica a cargo do navegador ou editor.
