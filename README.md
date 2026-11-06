@@ -1,5 +1,57 @@
 # Technical Challenge — Distributed Wagering Processor
 
+## Implementação e execução local
+
+Este repositório contém um serviço de processamento distribuído de apostas, implementado com Bun 1.x, NestJS, TypeORM, PostgreSQL e SQS via LocalStack.
+
+### Pré-requisitos
+
+- Bun 1.x
+- Docker Desktop com Docker Compose
+
+### Executar localmente
+
+Configure o arquivo `.env` a partir do exemplo e prepare o banco e as filas:
+
+```powershell
+bun install
+bun run build
+Copy-Item .env.example .env
+docker compose up -d postgres localstack
+bun run migration:run
+```
+
+Inicie a API em outro terminal:
+
+```powershell
+bun run start:dev
+```
+
+Para subir a API também no Compose, use `docker compose up --build`. O serviço `migrate` aguarda o PostgreSQL ficar saudável, aplica as migrations e termina; a API só inicia depois que essa etapa conclui com sucesso. O LocalStack inicializa as filas FIFO e configura a fila de entrada para encaminhar mensagens à DLQ após 5 recebimentos. A aplicação consome mensagens com retry por visibilidade da SQS; ao atingir o limite, a própria SQS move a mensagem para a DLQ.
+
+Para executar a suíte completa, com os containers ativos e o projeto compilado, pare antes a API iniciada em `start:dev` (`Ctrl+C`) para que o worker local não consuma mensagens usadas pelos testes:
+
+```powershell
+bun run test
+```
+
+`bun run test` inclui testes PostgreSQL/LocalStack, migrations, concorrência e múltiplas instâncias. Para executar apenas os testes de domínio: `bun test ./test/domain.test.ts`. Para somente os testes de integração: `bun run test:integration` (também requer containers e migrations).
+
+O PostgreSQL é criado **somente dentro de um container Docker** quando você executar o comando `docker compose up`. Nenhum servidor ou banco é instalado diretamente no Windows. O Compose configura a base `wager`, usuário `wager` e senha local `wager`, expondo a porta 5432; ainda não há volume nomeado, então remover o container pode remover os dados. O LocalStack expõe SQS em `localhost:4566` e cria as filas FIFO.
+
+Para parar os serviços: `docker compose down`. Para apagar também os dados do Postgres no container, `docker compose down -v` (não execute se quiser preservar dados).
+
+### API principal
+
+- `POST /wallets` abre uma wallet e grava o crédito inicial no ledger.
+- `POST /wagering/transactions` processa operação com `Idempotency-Key` obrigatório.
+- `GET /wallets/:id`, `GET /wallets/:id/ledger?cursor=...&limit=50` e `POST /wallets/:id/reconciliation` consultam e reconciliam saldo.
+- `GET /wagering/transactions/:id` consulta por ID interno; `GET /providers/:providerId/wagering/transactions/:externalId` consulta pelo identificador do provedor.
+- `GET /health/live` e `/health/ready` expõem liveness e readiness.
+- `GET /metrics` expõe as métricas da aplicação.
+
+Consulte [ARCHITECTURE.md](ARCHITECTURE.md) para decisões, limites conhecidos e fluxo de execução. A primeira migration cria o schema e pode ser revertida com `bun run migration:revert`.
+
 ## Bem-vindo à Jungle Gaming 🦧
 
 A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.
