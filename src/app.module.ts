@@ -7,9 +7,10 @@ import { loadConfig } from './infrastructure/config/app-config';
 import { buildOrmConfig } from './infrastructure/persistence/mikro-orm.config';
 import { AuthGuard } from './interfaces/http/auth.guard';
 import { HealthController } from './interfaces/http/health.controller';
+import { WageringModule } from './wagering.module';
 
 @Module({
-  imports: [MikroOrmModule.forRoot({ ...buildOrmConfig(loadConfig().databaseUrl) })],
+  imports: [MikroOrmModule.forRoot({ ...buildOrmConfig(loadConfig().databaseUrl) }), WageringModule],
   controllers: [HealthController],
   providers: [
     { provide: PROVIDER_IDENTITY_PORT, useClass: NoopProviderIdentityAdapter },

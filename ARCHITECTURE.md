@@ -78,3 +78,49 @@ Payload malformado (valor inválido, campo vazio, kind desconhecido, `OPENING`, 
 **Hash do payload:** SHA-256 (hex) do JSON canônico (chaves ordenadas recursivamente, sem espaços, `undefined` omitido) apenas dos campos de negócio: `providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, money{amount,currency}, referenceExternalTransactionId`. O header `Idempotency-Key` e metadados de transporte ficam fora; `money` é normalizado via `Money` (`"25"` ≡ `"25.00"`). Calculado dentro de `WagerTransaction.create`, então não pode divergir dos campos.
 
 **`WagerRulesService`** (domain service puro, sem I/O): recebe transação, wallet, referência resolvida e `referenceAlreadyReversed`; aplica as regras e devolve `PROCESSED(entry?) | REJECTED(code) | PENDING_REFERENCE`. O chamador (etapa 4) carrega wallet/referência sob o lock da wallet e persiste tudo, inclusive a rejeição, na mesma transação SQL (rejeição é commitada).
+
+## ADR-005: Schema, constraints, triggers e índices (Etapa 4)
+
+**Princípio:** o banco é a última linha de defesa; todo invariante crítico existe como constraint nomeada, e os testes de integração (`test/integration`, Postgres real, banco temporário por suíte) provam que cada uma bloqueia.
+
+- **Migrations** versionadas (`migrations/Migration2026110600000N_*`), listadas explicitamente em `migrations/index.ts`, com `down` reversível (testado: up → down passo a passo até schema vazio → up).
+- **wallets:** `UNIQUE(player_id, currency)`, `CHECK balance >= 0`, trigger que exige `version + 1` somente quando o saldo muda e identidade imutável; DELETE bloqueado.
+- **wagering_transactions:** `UNIQUE(idempotency_key)`, `UNIQUE(provider_id, external_transaction_id)`, `balance_snapshot` (saldo pós-processamento, devolvido em replays), checks de status/failure_code/processed_at; trigger congela estados terminais e campos de negócio; DELETE bloqueado.
+- **Reversão única:** índice parcial `(reference_transaction_id, kind) WHERE status='PROCESSED'` (pedido) **mais** `(reference_transaction_id) WHERE status='PROCESSED' AND kind IN ('REFUND','ROLLBACK')`, que impede REFUND + ROLLBACK da mesma referência (ver ADR-004).
+- **wallet_ledger_entries:** `UNIQUE(wallet_id, transaction_id)`, `seq` identity (cursor estável), checks de valor > 0 e aritmética `before ± amount = after`; triggers bloqueiam UPDATE/DELETE/TRUNCATE (append-only).
+- **inbox:** PK `(consumer_name, message_id)`. **outbox:** índice parcial de pendentes por `next_attempt_at` (`published_at IS NULL`).
+- **Money:** `MoneyAmountType` mapeia `NUMERIC(20,2)` ⇄ string decimal; `number` é rejeitado.
+- **Eficiência / N+1:** FKs são colunas escalares nos `EntitySchema` (sem `ManyToOne`, nada de lazy-load acidental); `loadStrategy: 'joined'` por padrão; leituras em lote com `$in`. Índices cobrem cada caminho quente (idempotência, provider+external, "quem espera esta referência", scan do worker, histórico por wallet, ledger por transação, keyset por `seq`, reconciliação index-only via `INCLUDE (direction, amount)`, claim do outbox). Testes usam `EXPLAIN` (com seqscan/bitmap desabilitados) e provam contagem de queries constante (N=5 vs 40).
+- **Limitação:** superuser pode desabilitar triggers. Em produção, a aplicação deve usar um role sem `ALTER TABLE`/`DISABLE TRIGGER`.
+- `outbox.next_attempt_at` é `NOT NULL DEFAULT now()`; o mapper trata o opcional do domínio.
+
+## ADR-006: ProcessWagerTransaction, OpenWallet e mapeamento HTTP (Etapa 5)
+
+**Fluxo (uma transação SQL, `MikroOrmUnitOfWork`):**
+1. `INSERT ... ON CONFLICT DO NOTHING` da transação `PENDING` (unique de `idempotency_key` e de `provider_id + external_transaction_id`); o insert é um `INSERT ... SELECT FROM wallets`, então wallet inexistente vira no-op (sem erro de FK abortando a transação).
+2. Insert sem efeito → carrega a existente: mesma key + mesmo `payloadHash` = **replay** (resultado original, `idempotentReplay: true`, saldo = snapshot gravado, não o saldo atual); payload diferente, ou mesmo `provider/external id` sob outra key = **409**; nada encontrado = wallet inexistente (**404**).
+3. `SELECT ... FOR NO KEY UPDATE` da wallet (só ela é serializada; nenhum lock global).
+4. Referência resolvida por `(provider, referenceExternalTransactionId)`, `isReversed` e `WagerRulesService` (domínio puro).
+5. Resultado persistido: status/failureCode/snapshot da transação, ledger, `wallets.balance + version` (guarda `version = esperada`) e eventos na outbox; `COMMIT`. **Rejeição de negócio é um resultado, não exceção: é commitada** (linha `REJECTED` + evento). Exceção = rollback total.
+
+**Por que `FOR NO KEY UPDATE` e não `FOR UPDATE`:** como o insert (passo 1) precede o lock (passo 3), cada transação concorrente já segura `FOR KEY SHARE` na wallet (FK). Duas delas pedindo `FOR UPDATE` se bloqueiam mutuamente → **deadlock** (observado nos testes com 50 requisições paralelas). `FOR NO KEY UPDATE` não conflita com `KEY SHARE` e é suficiente, pois a chave da wallet nunca muda.
+
+**Outros pontos:** `lock_timeout` local (5s, `LOCK_TIMEOUT_MS`) transforma contenção excessiva em 503 retryável; ids UUIDv7 (`IdGenerator`), `Clock` injetável; eventos da outbox: `WagerTransactionProcessed` (inclusive LOSS), `WalletBalanceChanged` (só quando o saldo muda), `WagerTransactionRejected`, `WagerTransactionPendingReference`. `POST /wallets` cria wallet + `OPENING` (provider `SYSTEM`, key `opening:<walletId>`) + ledger `CREDIT` + eventos na mesma transação (saldo zero: só a wallet).
+
+**Mapeamento HTTP (igual em todos os endpoints; erros sempre `{ "error": { "code", "message" } }`):**
+
+| Situação | HTTP | Observação |
+|---|---|---|
+| Payload inválido (JSON, money, UUID, kind, OPENING, header `Idempotency-Key` ausente/vazio/>255) | **400** | nada persistido; não reenviar sem corrigir |
+| Wallet inexistente | **404** | nada persistido |
+| Mesma key com payload diferente; mesmo provider/external id com outra key | **409** `IDEMPOTENCY_CONFLICT` | não é replay |
+| Wallet duplicada (`playerId + currency`) | **409** `WALLET_ALREADY_EXISTS` | |
+| Rejeição de negócio (`REJECTED`) | **422** | corpo traz `failureCode` + `advice`; persistida, replay devolve o mesmo 422 |
+| Referência ausente/pendente (`PENDING_REFERENCE`) | **202** | aceito, processamento pendente |
+| Aplicada (`PROCESSED`) | **200** (`POST /wallets`: **201**) | `balance` = saldo após a transação |
+| Falha transitória (conexão, deadlock, serialização, lock timeout) | **503** + `Retry-After: 1` | nada foi commitado; reenviar a MESMA key é seguro |
+| `FAILED` terminal reproduzido / erro inesperado | **500** | |
+
+Replay mantém o status do resultado original (200/202/422) com `idempotentReplay: true`.
+
+**Limitação conhecida:** a decisão de `PENDING_REFERENCE` olha apenas referências já commitadas; o worker que reprocessa pendentes (etapa futura) resolve a corrida em que a referência chega logo depois.
