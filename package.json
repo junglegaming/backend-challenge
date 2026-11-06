@@ -4,16 +4,36 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test",
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "test": "bun test test/unit test/e2e",
     "test:unit": "bun test test/unit",
-    "typecheck": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5.6.0"
+    "test:integration": "bun test --timeout 60000 test/integration",
+    "migrate": "bun src/infrastructure/persistence/migrate.ts up",
+    "migrate:down": "bun src/infrastructure/persistence/migrate.ts down",
+    "migrate:status": "bun src/infrastructure/persistence/migrate.ts status",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1163.0",
     "@mikro-orm/core": "^7.2.7",
-    "@mikro-orm/postgresql": "^7.2.7"
+    "@mikro-orm/migrations": "^7.2.7",
+    "@mikro-orm/nestjs": "^7.1.0",
+    "@mikro-orm/postgresql": "^7.2.7",
+    "@nestjs/common": "^12.4.0",
+    "@nestjs/core": "^12.4.0",
+    "@nestjs/platform-express": "^12.4.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nestjs/testing": "^12.4.0",
+    "@types/bun": "^1.4.4",
+    "@types/express": "^5.0.6",
+    "eslint": "^10.14.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.72.1"
   }
 }
