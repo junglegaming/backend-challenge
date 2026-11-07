@@ -123,4 +123,33 @@ Payload malformado (valor inválido, campo vazio, kind desconhecido, `OPENING`, 
 
 Replay mantém o status do resultado original (200/202/422) com `idempotentReplay: true`.
 
-**Limitação conhecida:** a decisão de `PENDING_REFERENCE` olha apenas referências já commitadas; o worker que reprocessa pendentes (etapa futura) resolve a corrida em que a referência chega logo depois.
+**Referências fora de ordem:** a decisão inicial olha apenas referências já commitadas; o worker descrito na ADR-007 trata a chegada posterior.
+
+## ADR-007: Reprocessamento de referências pendentes
+
+- O processamento inicial e os retries compartilham `WagerRulesService` e a mesma aplicação de saldo, ledger, versão e outbox. A referência é procurada por `(providerId, referenceExternalTransactionId)`; referência de outro provedor não é usada.
+- A migration adiciona contagem e próximo horário persistidos e um índice parcial para buscar pendências vencidas. Linhas pendentes anteriores à migration ficam elegíveis imediatamente. Cada tentativa é uma transação SQL separada: `FOR NO KEY UPDATE SKIP LOCKED` na pendência, lock da wallet, regras e persistência atômica. O lock mais fraco é compatível com os `KEY SHARE` das FKs; workers concorrentes não processam a mesma linha simultaneamente.
+- O scheduler roda a cada segundo, com até 20 transações por ciclo, sem sobreposição no mesmo processo, e aguarda trabalho em andamento no encerramento. Falhas de infraestrutura causam rollback, são registradas e a linha continua elegível para nova tentativa.
+- Primeira tentativa após 1 segundo; depois intervalos de 2, 4, 8, 16, 32, 64 e 128 segundos. No máximo **8 tentativas** ou **5 minutos** desde a criação: em condições normais o limite é atingido após 255 segundos; o TTL limita pendências quando há atrasos do worker. São valores operacionais conservadores para absorver reordenação breve sem manter pendências indefinidamente, não uma garantia de entrega do provedor.
+- Em cada tentativa as regras são executadas antes de verificar o limite: se a referência já estiver disponível, ela é processada mesmo após atraso do worker; se continuar ausente ou pendente ao esgotar o prazo/tentativas, a transação vira `REJECTED` com `REFERENCE_NOT_FOUND` e evento `WagerTransactionRejected`, no mesmo commit. Retries que continuam pendentes não repetem o evento inicial.
+- A unicidade existente impede duas reversões de uma mesma referência por qualquer combinação de REFUND e ROLLBACK. Um replay consulta o estado atualmente persistido, que pode ter evoluído de `PENDING_REFERENCE` para terminal.
+
+## ADR-008: Publicação da outbox no SQS
+
+- Os quatro eventos versionados já são serializados com `MoneyProps` e gravados na transação financeira. A fila de saída `wager-events.fifo` é separada da fila de entrada `wager-transactions.fifo`; configurar `SQS_EVENTS_QUEUE_URL` também fora do Docker Compose.
+- Cada publicação reserva uma mensagem vencida com `FOR UPDATE SKIP LOCKED`, envia ao SQS mantendo a transação aberta e só depois marca `published_at` e commita. Múltiplas instâncias trabalham em paralelo; uma falha no banco ou morte do processo libera o lock e deixa o registro elegível novamente. O scheduler tenta até 20 registros por ciclo de um segundo, sem ciclos simultâneos na mesma instância, e aguarda o trabalho em andamento no encerramento.
+- Falhas de envio são registradas e persistem `attempts` e `next_attempt_at` com backoff exponencial (1 s inicial, teto 5 min, sem limite de tentativas). Falhas ao gravar esse estado ou ao confirmar publicação propagam e revertem a transação. O envio usa timeout de 20 s e uma tentativa por chamada do SDK.
+- O `eventId` persistido é `MessageDeduplicationId` e `aggregateId` é `MessageGroupId`. SQS FIFO deduplica dentro da janela de cinco minutos, mas **não garante exactly-once de ponta a ponta**: queda após envio e antes do commit, timeout ambíguo ou reentrega após a janela podem produzir duplicatas. Consumidores de eventos de saída precisam de inbox persistente e idempotência por `eventId`; esses consumidores permanecem fora deste escopo.
+- A fila FIFO preserva a ordem de chegada ao SQS por grupo, mas publishers concorrentes usando `SKIP LOCKED` não garantem que a ordem de envio seja a mesma dos commits para uma wallet. Consumidores não devem presumir ordenação por versão da wallet.
+
+## ADR-009: Consumo SQS com inbox
+
+- `WagerTransactionRequested` usa `messageId` da mensagem de aplicação, não o ID de transporte do SQS. A PK `(wager-transactions, messageId)` é inserida antes de executar o mesmo `ProcessWagerTransaction` da HTTP, dentro da mesma transação SQL; inbox, transação financeira, saldo, ledger e outbox são commitados juntos. A inbox guarda SHA-256 do JSON canônico do envelope completo; mesma ID e payload divergente é conflito permanente, nunca replay silencioso.
+- Rejeições de negócio e `PENDING_REFERENCE` são resultados persistidos e recebem ack. Payload inválido, conflito de idempotência, wallet inexistente ou transação `FAILED` são erros permanentes; erros transitórios e inesperados são registrados separadamente. Em todos os erros não há ack e a visibilidade é reagendada com backoff exponencial (1 s, 2 s, 4 s, ... até 300 s).
+- O redrive do SQS da fila de entrada encaminha mensagens não reconhecidas à DLQ após cinco recebimentos, inclusive falhas transitórias prolongadas. A configuração de produção precisa manter uma política equivalente e operadores devem inspecionar/reprocessar a DLQ. Não há envio manual à DLQ seguido de delete, evitando perda entre duas chamadas não atômicas.
+- Ack (`DeleteMessage`) acontece somente após o commit. Falha de ack ou morte após commit causa redelivery, resolvida pela inbox; falha antes do commit reverte também a inbox. Se o resultado do commit for ambíguo, a reentrega com os mesmos IDs é segura.
+- Na entrada, produtores devem usar `walletId` como `MessageGroupId`, mas isso é apenas otimização: a correção depende de constraints e lock SQL por wallet, não de FIFO ou do grupo. O consumidor renova visibilidade durante o processamento; `SIGTERM` interrompe o long polling e aguarda a mensagem em andamento antes de fechar o cliente. Uma terminação forçada permite redelivery quando a visibilidade expirar.
+
+## Testes de concorrência e recuperação
+
+Os testes de integração iniciam três processos independentes da aplicação Nest, com banco e filas reais isolados. Uma wallet bloqueada força as três requisições a disputar o mesmo registro no PostgreSQL; após liberar o lock, são verificados os resultados e a reconciliação. Outro cenário mata o serviço, envia uma mensagem durante a indisponibilidade, reinicia e verifica inbox, ledger, outbox e entrega no SQS. O teste de atomicidade injeta uma falha no segundo evento da outbox e compara wallet, ledger, transação, inbox e outbox antes e depois do rollback.

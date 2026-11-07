@@ -22,6 +22,8 @@ export interface WagerTransactionRepository {
   isReversed(transactionId: string): Promise<boolean>;
   /** Persists the outcome (status, failure code, reference, snapshot, processedAt) of a locked transaction. */
   saveOutcome(transaction: WagerTransaction, balanceSnapshot: Money | undefined): Promise<void>;
+  claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number } | undefined>;
+  scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void>;
 }
 
 export interface WalletRepository {
@@ -41,11 +43,17 @@ export interface OutboxRepository {
   enqueue(event: IntegrationEvent<unknown>): Promise<void>;
 }
 
+export interface InboxRepository {
+  receive(consumerName: string, messageId: string, payloadHash: string, now: Date): Promise<'inserted' | 'duplicate' | 'conflict'>;
+  markProcessed(consumerName: string, messageId: string, now: Date): Promise<void>;
+}
+
 export interface WageringRepositories {
   transactions: WagerTransactionRepository;
   wallets: WalletRepository;
   ledger: LedgerRepository;
   outbox: OutboxRepository;
+  inbox: InboxRepository;
 }
 
 export const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');

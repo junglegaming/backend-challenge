@@ -4,7 +4,7 @@ import type { WagerTransactionKind } from '../../domain/wagering/wager-enums';
 import { WagerTransactionStatus } from '../../domain/wagering/wager-enums';
 import { WagerRulesService } from '../../domain/wagering/wager-rules.service';
 import { WagerTransaction } from '../../domain/wagering/wager-transaction';
-import { IdempotencyConflictError, InvalidRequestError, WalletNotFoundError } from '../errors';
+import { IdempotencyConflictError, InvalidRequestError, PermanentMessageError, WalletNotFoundError } from '../errors';
 import {
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
@@ -39,6 +39,9 @@ export interface ProcessWagerTransactionResult {
 }
 
 const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+export const MAX_REFERENCE_RETRIES = 8;
+export const REFERENCE_TTL_MS = 5 * 60_000;
+const INITIAL_RETRY_DELAY_MS = 1000;
 
 /**
  * One SQL transaction, in this order:
@@ -60,76 +63,119 @@ export class ProcessWagerTransaction {
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
     const transaction = this.build(command);
+    return this.unitOfWork.run((repositories) => this.executeInTransaction(repositories, transaction));
+  }
 
-    return this.unitOfWork.run(async (repositories) => {
-      const { transactions, wallets } = repositories;
-
-      if (!(await transactions.insertIfAbsent(transaction))) {
-        return this.replay(repositories, transaction);
+  async executeMessage(command: ProcessWagerTransactionCommand, message: { consumerName: string; messageId: string; payloadHash: string }): Promise<void> {
+    const transaction = this.build(command);
+    await this.unitOfWork.run(async (repositories) => {
+      const state = await repositories.inbox.receive(message.consumerName, message.messageId, message.payloadHash, this.clock.now());
+      if (state === 'duplicate') return;
+      if (state === 'conflict') throw new IdempotencyConflictError(`Inbox message ${message.messageId} has a different payload`);
+      const result = await this.executeInTransaction(repositories, transaction);
+      if (result.status === WagerTransactionStatus.Failed) {
+        throw new PermanentMessageError(`Transaction ${result.transactionId} has terminal status FAILED`);
       }
+      await repositories.inbox.markProcessed(message.consumerName, message.messageId, this.clock.now());
+    });
+  }
 
-      const wallet = await wallets.lockById(transaction.walletId);
-      if (!wallet) throw new WalletNotFoundError(transaction.walletId);
+  private async executeInTransaction(repositories: WageringRepositories, transaction: WagerTransaction): Promise<ProcessWagerTransactionResult> {
+    if (!(await repositories.transactions.insertIfAbsent(transaction))) {
+      return this.replay(repositories, transaction);
+    }
 
-      const reference = transaction.requiresReference() && transaction.referenceExternalTransactionId
-        ? (await transactions.findByProviderAndExternalId(transaction.providerId, transaction.referenceExternalTransactionId))
-            ?.transaction
-        : undefined;
-      const referenceAlreadyReversed = reference ? await transactions.isReversed(reference.id) : false;
+    return this.processExisting(repositories, transaction);
+  }
 
-      const now = this.clock.now();
-      const versionBefore = wallet.version;
-      const outcome = this.rules.process({
-        transaction,
-        wallet,
-        reference,
-        referenceAlreadyReversed,
-        entryId: this.ids.next(),
-        now,
-      });
-      const ctx = () => ({ eventId: this.ids.next(), occurredAt: now });
+  /** Applies a newly inserted or claimed pending transaction inside the caller's SQL transaction. */
+  async processExisting(
+    repositories: WageringRepositories,
+    transaction: WagerTransaction,
+    retryCount?: number,
+  ): Promise<ProcessWagerTransactionResult> {
+    const { transactions, wallets } = repositories;
+    const wallet = await wallets.lockById(transaction.walletId);
+    if (!wallet) throw new WalletNotFoundError(transaction.walletId);
 
-      switch (outcome.status) {
-        case WagerTransactionStatus.Processed: {
-          if (outcome.entry) {
-            await repositories.ledger.append(outcome.entry);
-            await wallets.saveBalance(wallet, versionBefore);
-          }
-          await transactions.saveOutcome(transaction, wallet.balance);
-          await repositories.outbox.enqueue(WagerTransactionProcessed.from(transaction, wallet.balance.toJSON(), ctx()));
-          if (outcome.entry) {
-            await repositories.outbox.enqueue(WalletBalanceChanged.from(wallet, outcome.entry, ctx()));
-          }
-          return {
-            transactionId: transaction.id,
-            status: WagerTransactionStatus.Processed,
-            balance: wallet.balance.toJSON(),
-            idempotentReplay: false,
-          };
+    const reference = transaction.requiresReference() && transaction.referenceExternalTransactionId
+      ? (await transactions.findByProviderAndExternalId(transaction.providerId, transaction.referenceExternalTransactionId))
+          ?.transaction
+      : undefined;
+    const referenceAlreadyReversed = reference ? await transactions.isReversed(reference.id) : false;
+
+    const now = this.clock.now();
+    const versionBefore = wallet.version;
+    const outcome = this.rules.process({
+      transaction,
+      wallet,
+      reference,
+      referenceAlreadyReversed,
+      entryId: this.ids.next(),
+      now,
+    });
+    const ctx = () => ({ eventId: this.ids.next(), occurredAt: now });
+
+    switch (outcome.status) {
+      case WagerTransactionStatus.Processed: {
+        if (outcome.entry) {
+          await repositories.ledger.append(outcome.entry);
+          await wallets.saveBalance(wallet, versionBefore);
         }
-        case WagerTransactionStatus.Rejected: {
-          const advice = failureAdvice(outcome.failureCode);
+        await transactions.saveOutcome(transaction, wallet.balance);
+        await repositories.outbox.enqueue(WagerTransactionProcessed.from(transaction, wallet.balance.toJSON(), ctx()));
+        if (outcome.entry) {
+          await repositories.outbox.enqueue(WalletBalanceChanged.from(wallet, outcome.entry, ctx()));
+        }
+        return {
+          transactionId: transaction.id,
+          status: WagerTransactionStatus.Processed,
+          balance: wallet.balance.toJSON(),
+          idempotentReplay: false,
+        };
+      }
+      case WagerTransactionStatus.Rejected: {
+        const advice = failureAdvice(outcome.failureCode);
+        await transactions.saveOutcome(transaction, undefined);
+        await repositories.outbox.enqueue(WagerTransactionRejected.from(transaction, advice, ctx()));
+        return {
+          transactionId: transaction.id,
+          status: WagerTransactionStatus.Rejected,
+          failureCode: outcome.failureCode,
+          advice,
+          idempotentReplay: false,
+        };
+      }
+      case WagerTransactionStatus.PendingReference: {
+        const attempts = retryCount === undefined ? 0 : retryCount + 1;
+        const deadline = transaction.createdAt.getTime() + REFERENCE_TTL_MS;
+        if (retryCount !== undefined && (attempts >= MAX_REFERENCE_RETRIES || now.getTime() >= deadline)) {
+          await transactions.scheduleReferenceRetry(transaction.id, attempts, now);
+          transaction.reject(FailureCode.ReferenceNotFound);
+          const advice = failureAdvice(FailureCode.ReferenceNotFound);
           await transactions.saveOutcome(transaction, undefined);
           await repositories.outbox.enqueue(WagerTransactionRejected.from(transaction, advice, ctx()));
           return {
             transactionId: transaction.id,
             status: WagerTransactionStatus.Rejected,
-            failureCode: outcome.failureCode,
+            failureCode: FailureCode.ReferenceNotFound,
             advice,
             idempotentReplay: false,
           };
         }
-        case WagerTransactionStatus.PendingReference: {
-          await transactions.saveOutcome(transaction, undefined);
+        await transactions.saveOutcome(transaction, undefined);
+        const next = Math.min(now.getTime() + INITIAL_RETRY_DELAY_MS * 2 ** attempts, deadline);
+        await transactions.scheduleReferenceRetry(transaction.id, attempts, new Date(next));
+        if (retryCount === undefined) {
           await repositories.outbox.enqueue(WagerTransactionPendingReference.from(transaction, ctx()));
-          return {
-            transactionId: transaction.id,
-            status: WagerTransactionStatus.PendingReference,
-            idempotentReplay: false,
-          };
         }
+        return {
+          transactionId: transaction.id,
+          status: WagerTransactionStatus.PendingReference,
+          idempotentReplay: false,
+        };
       }
-    });
+    }
   }
 
   private build(command: ProcessWagerTransactionCommand): WagerTransaction {

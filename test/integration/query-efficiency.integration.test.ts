@@ -73,6 +73,14 @@ describe('every hot access path is served by an index (no sequential scans, no s
     expect(p).not.toContain('Sort');
   });
 
+  test('retry worker uses the partial due-time index with SKIP LOCKED', async () => {
+    const p = await plan(`select id from wagering_transactions
+      where status = 'PENDING_REFERENCE' and reference_next_attempt_at <= now()
+      order by reference_next_attempt_at, id limit 1 for no key update skip locked`);
+    expect(p).toContain('wagering_transactions_reference_due_idx');
+    expect(p).not.toContain('Sort');
+  });
+
   test('"was this reference already reversed?" hits a reversal unique index', async () => {
     expect(
       await plan(

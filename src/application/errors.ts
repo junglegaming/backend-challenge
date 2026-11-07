@@ -42,6 +42,14 @@ export class WalletAlreadyExistsError extends ApplicationError {
   }
 }
 
+export class PermanentMessageError extends ApplicationError {
+  readonly code = 'PERMANENT_MESSAGE_FAILURE';
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 /** Infrastructure hiccup (connection, lock timeout, deadlock...): nothing was committed, retrying is safe. */
 export class TransientInfrastructureError extends ApplicationError {
   readonly code = 'TRANSIENT_INFRASTRUCTURE_FAILURE';
