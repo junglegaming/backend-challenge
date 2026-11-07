@@ -11,8 +11,7 @@
     "emitDecoratorMetadata": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "types": ["bun"]
+    "noEmit": true
   },
   "include": ["src", "test"]
 }
