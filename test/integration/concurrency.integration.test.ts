@@ -158,10 +158,10 @@ describe('real parallelism (Promise.all, real PostgreSQL)', () => {
     expect(applied.some((m) => m.kind === 'LOSS')).toBe(false); // LOSS does not touch the ledger
     expect(processedBets + rejected.length).toBe(30);
 
-    const expected = 100 * 100 + wins * 300 - processedBets * 700; // cents: integer math, test-only
+    const expected = 10000n + BigInt(wins) * 300n - BigInt(processedBets) * 700n;
     const row = await walletRow(w.id);
-    expect(row.balance).toBe((expected / 100).toFixed(2));
-    expect(Number(row.balance)).toBeGreaterThanOrEqual(0);
+    expect(row.balance).toBe(`${expected / 100n}.${(expected % 100n).toString().padStart(2, '0')}`);
+    expect(expected >= 0n).toBe(true);
     expect(row.version).toBe(1 + processedBets + wins); // one increment per balance change, none for LOSS/REJECTED
 
     const total = await db.run<{ n: string }>('select count(*) as n from wagering_transactions where wallet_id = ?', [w.id]);

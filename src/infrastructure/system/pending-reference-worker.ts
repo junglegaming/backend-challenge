@@ -1,8 +1,9 @@
-import { Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { JsonLogger } from '../observability/json-logger';
 import type { RetryPendingReference } from '../../application/wagering/retry-pending-reference';
 
 export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(PendingReferenceWorker.name);
+  private readonly logger = new JsonLogger(PendingReferenceWorker.name);
   private timer: ReturnType<typeof setTimeout> | undefined;
   private active: Promise<void> | undefined;
   private stopping = false;
@@ -32,8 +33,8 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
       for (let i = 0; i < 20 && !this.stopping; i++) {
         if (!(await this.retry.runOne())) break;
       }
-    } catch (error) {
-      this.logger.error('Failed to retry pending reference; transaction rolled back', error instanceof Error ? error.stack : String(error));
+    } catch {
+      this.logger.error('Failed to retry pending reference; transaction rolled back');
     } finally {
       this.schedule();
     }

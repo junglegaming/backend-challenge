@@ -35,6 +35,8 @@ export class WageringTransactionRecord {
   processedAt?: Date | null;
   referenceRetryCount!: number;
   referenceNextAttemptAt!: Date;
+  correlationId?: string | null;
+  causationId?: string | null;
 }
 
 export class WalletLedgerEntryRecord {

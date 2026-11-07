@@ -6,6 +6,8 @@ import { WagerTransactionProcessed, WalletBalanceChanged } from '../events/wager
 import type { Clock, IdGenerator } from '../ports/clock-and-ids.port';
 import type { UnitOfWork } from '../ports/wagering-repositories.port';
 import { assertStorableMoney, assertUuid } from './validation';
+import { currentContext, updateContext } from '../observability/context';
+import { NOOP_TELEMETRY, type Telemetry } from '../observability/telemetry';
 
 export interface OpenWalletCommand {
   playerId: string;
@@ -27,6 +29,7 @@ export class OpenWallet {
     private readonly unitOfWork: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly telemetry: Telemetry = NOOP_TELEMETRY,
   ) {}
 
   async execute(command: OpenWalletCommand): Promise<OpenWalletResult> {
@@ -37,6 +40,8 @@ export class OpenWallet {
     const now = this.clock.now();
     const wallet = Wallet.open({ id: this.ids.next(), playerId: command.playerId, initialBalance, now });
     const entry = wallet.openingEntry({ entryId: this.ids.next(), transactionId: this.ids.next(), at: now });
+    updateContext({ walletId: wallet.id, ...(entry ? { transactionId: entry.transactionId, providerId: SYSTEM_PROVIDER } : {}) });
+    const trace = currentContext();
 
     await this.unitOfWork.run(async ({ wallets, transactions, ledger, outbox }) => {
       if (!(await wallets.insertIfAbsent(wallet))) {
@@ -61,11 +66,12 @@ export class OpenWallet {
       await ledger.append(entry);
       await transactions.saveOutcome(opening, wallet.balance);
       await outbox.enqueue(
-        WagerTransactionProcessed.from(opening, wallet.balance.toJSON(), { eventId: this.ids.next(), occurredAt: now }),
+        WagerTransactionProcessed.from(opening, wallet.balance.toJSON(), { eventId: this.ids.next(), occurredAt: now, ...(trace ? { correlationId: trace.correlationId, causationId: trace.messageId } : {}) }),
       );
-      await outbox.enqueue(WalletBalanceChanged.from(wallet, entry, { eventId: this.ids.next(), occurredAt: now }));
+      await outbox.enqueue(WalletBalanceChanged.from(wallet, entry, { eventId: this.ids.next(), occurredAt: now, ...(trace ? { correlationId: trace.correlationId, causationId: trace.messageId } : {}) }));
     });
 
+    if (entry) this.telemetry.transaction('PROCESSED');
     return { id: wallet.id, playerId: wallet.playerId, balance: wallet.balance.toJSON(), version: wallet.version };
   }
 }
