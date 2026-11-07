@@ -1,8 +1,9 @@
-import { Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { JsonLogger } from '../observability/json-logger';
 import type { PublishOutbox } from '../../application/outbox/publish-outbox';
 
 export class OutboxPublisherWorker implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(OutboxPublisherWorker.name);
+  private readonly logger = new JsonLogger(OutboxPublisherWorker.name);
   private timer: ReturnType<typeof setTimeout> | undefined;
   private active: Promise<void> | undefined;
   private stopping = false;
@@ -31,8 +32,8 @@ export class OutboxPublisherWorker implements OnModuleInit, OnModuleDestroy {
       for (let i = 0; i < 20 && !this.stopping; i++) {
         if (!(await this.publish.runOne())) break;
       }
-    } catch (error) {
-      this.logger.error('Outbox transaction failed; publication will be retried', error instanceof Error ? error.stack : String(error));
+    } catch {
+      this.logger.error('Outbox transaction failed; publication will be retried');
     } finally {
       this.schedule();
     }

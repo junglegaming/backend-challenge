@@ -51,6 +51,8 @@ export const WageringTransactionSchema = new EntitySchema<WageringTransactionRec
     processedAt: { ...timestamp(), nullable: true },
     referenceRetryCount: { type: 'number', columnType: 'integer', default: 0 },
     referenceNextAttemptAt: { ...timestamp(), defaultRaw: 'now()' },
+    correlationId: { type: 'string', columnType: 'text', nullable: true },
+    causationId: { type: 'string', columnType: 'text', nullable: true },
   },
 });
 

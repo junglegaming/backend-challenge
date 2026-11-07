@@ -15,14 +15,14 @@ export interface WagerTransactionRepository {
    * `INSERT ... ON CONFLICT DO NOTHING` of a PENDING transaction. Returns false when the idempotency key
    * (or provider + external id) already exists, or when the wallet does not exist.
    */
-  insertIfAbsent(transaction: WagerTransaction): Promise<boolean>;
+  insertIfAbsent(transaction: WagerTransaction, trace?: { correlationId: string; causationId?: string | undefined }): Promise<boolean>;
   findByIdempotencyKey(key: string): Promise<StoredTransaction | undefined>;
   findByProviderAndExternalId(providerId: string, externalTransactionId: string): Promise<StoredTransaction | undefined>;
   /** True when a PROCESSED REFUND/ROLLBACK already targets the given transaction. */
   isReversed(transactionId: string): Promise<boolean>;
   /** Persists the outcome (status, failure code, reference, snapshot, processedAt) of a locked transaction. */
   saveOutcome(transaction: WagerTransaction, balanceSnapshot: Money | undefined): Promise<void>;
-  claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number } | undefined>;
+  claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined } | undefined>;
   scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void>;
 }
 

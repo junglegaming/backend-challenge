@@ -18,11 +18,13 @@ import type {
   WalletRepository,
 } from '../../application/ports/wagering-repositories.port';
 import { DomainError } from '../../domain/shared/domain-error';
+import { NOOP_TELEMETRY, type Telemetry } from '../../application/observability/telemetry';
+import { decimalText } from './decimal-text';
 
-type Row = Record<string, string | number | null>;
+export type Row = Record<string, string | number | null>;
 
 /** Executes parameterised SQL inside the current MikroORM transaction. */
-class Sql {
+export class Sql {
   constructor(private readonly em: EntityManager) {}
 
   rows(sql: string, params: unknown[] = []): Promise<Row[]> {
@@ -44,16 +46,16 @@ const TRANSACTION_COLUMNS = `id, provider_id, external_transaction_id, idempoten
 const str = (v: unknown): string => String(v);
 const optional = (v: unknown): string | undefined => (v === null || v === undefined ? undefined : String(v));
 
-class SqlWagerTransactionRepository implements WagerTransactionRepository {
+export class SqlWagerTransactionRepository implements WagerTransactionRepository {
   constructor(private readonly sql: Sql) {}
 
-  async insertIfAbsent(tx: WagerTransaction): Promise<boolean> {
+  async insertIfAbsent(tx: WagerTransaction, trace?: { correlationId: string; causationId?: string | undefined }): Promise<boolean> {
     // The wallet is joined so a missing wallet makes the insert a no-op instead of aborting the SQL transaction with an FK error.
     const rows = await this.sql.rows(
       `insert into wagering_transactions
          (id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id, player_id, round_id,
-          game_id, kind, amount, currency, reference_external_transaction_id, status, created_at)
-       select ?::uuid, ?, ?, ?, ?, w.id, ?::uuid, ?, ?, ?, ?::numeric, ?, ?, 'PENDING', ?::timestamptz
+          game_id, kind, amount, currency, reference_external_transaction_id, status, created_at, correlation_id, causation_id)
+       select ?::uuid, ?, ?, ?, ?, w.id, ?::uuid, ?, ?, ?, ?::numeric, ?, ?, 'PENDING', ?::timestamptz, ?, ?
          from wallets w where w.id = ?::uuid
        on conflict do nothing
        returning id`,
@@ -71,6 +73,8 @@ class SqlWagerTransactionRepository implements WagerTransactionRepository {
         tx.money.currency,
         tx.referenceExternalTransactionId ?? null,
         tx.createdAt.toISOString(),
+        trace?.correlationId ?? null,
+        trace?.causationId ?? null,
         tx.walletId,
       ],
     );
@@ -90,6 +94,11 @@ class SqlWagerTransactionRepository implements WagerTransactionRepository {
     return row ? this.toStored(row) : undefined;
   }
 
+  async findById(id: string): Promise<StoredTransaction | undefined> {
+    const [row] = await this.sql.rows(`select ${TRANSACTION_COLUMNS} from wagering_transactions where id = ?::uuid`, [id]);
+    return row ? this.toStored(row) : undefined;
+  }
+
   async isReversed(transactionId: string): Promise<boolean> {
     const rows = await this.sql.rows(
       `select 1 from wagering_transactions
@@ -99,14 +108,14 @@ class SqlWagerTransactionRepository implements WagerTransactionRepository {
     return rows.length > 0;
   }
 
-  async claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number } | undefined> {
+  async claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined } | undefined> {
     const [row] = await this.sql.rows(
-      `select ${TRANSACTION_COLUMNS}, reference_retry_count from wagering_transactions
+      `select ${TRANSACTION_COLUMNS}, reference_retry_count, correlation_id, causation_id from wagering_transactions
        where status = 'PENDING_REFERENCE' and reference_next_attempt_at <= ?::timestamptz
        order by reference_next_attempt_at, id limit 1 for no key update skip locked`,
       [now.toISOString()],
     );
-    return row ? { transaction: this.toStored(row).transaction, retryCount: Number(row.reference_retry_count) } : undefined;
+    return row ? { transaction: this.toStored(row).transaction, retryCount: Number(row.reference_retry_count), correlationId: optional(row.correlation_id), causationId: optional(row.causation_id) } : undefined;
   }
 
   async scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void> {
@@ -138,7 +147,7 @@ class SqlWagerTransactionRepository implements WagerTransactionRepository {
 
   private toStored(row: Row): StoredTransaction {
     const currency = str(row.currency);
-    const snapshot = optional(row.balance_snapshot);
+    const snapshot = row.balance_snapshot == null ? undefined : decimalText(row.balance_snapshot);
     return {
       transaction: WagerTransaction.rehydrate({
         id: str(row.id),
@@ -151,7 +160,7 @@ class SqlWagerTransactionRepository implements WagerTransactionRepository {
         roundId: str(row.round_id),
         gameId: str(row.game_id),
         kind: str(row.kind) as WagerTransactionKind,
-        money: Money.from({ amount: str(row.amount), currency }),
+        money: Money.from({ amount: decimalText(row.amount), currency }),
         referenceExternalTransactionId: optional(row.reference_external_transaction_id),
         createdAt: new Date(str(row.created_at)),
         status: str(row.status) as WagerTransactionStatus,
@@ -197,7 +206,7 @@ class SqlWalletRepository implements WalletRepository {
       id: str(row.id),
       playerId: str(row.player_id),
       currency,
-      balance: Money.from({ amount: str(row.balance), currency }),
+      balance: Money.from({ amount: decimalText(row.balance), currency }),
       version: Number(row.version),
       createdAt: new Date(str(row.created_at)),
       updatedAt: new Date(str(row.updated_at)),
@@ -294,6 +303,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
   constructor(
     private readonly em: EntityManager,
     private readonly lockTimeoutMs = 5000,
+    private readonly telemetry: Telemetry = NOOP_TELEMETRY,
   ) {}
 
   async run<T>(work: (repositories: WageringRepositories) => Promise<T>): Promise<T> {
@@ -311,6 +321,9 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         });
       });
     } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && (error.code === '55P03' || error.code === '40P01')) {
+        this.telemetry.lockConflict();
+      }
       if (error instanceof ApplicationError || error instanceof DomainError) throw error;
       if (isTransientDatabaseError(error)) {
         throw new TransientInfrastructureError('database temporarily unavailable', { cause: error });

@@ -1,4 +1,6 @@
 import type { Clock } from '../ports/clock-and-ids.port';
+import { NOOP_TELEMETRY, type Telemetry } from '../observability/telemetry';
+import { runWithContext, validCorrelationId } from '../observability/context';
 
 export interface PendingOutboxMessage {
   id: string;
@@ -31,6 +33,7 @@ export class PublishOutbox {
     private readonly publisher: EventPublisher,
     private readonly clock: Clock,
     private readonly logger: PublishLogger,
+    private readonly telemetry: Telemetry = NOOP_TELEMETRY,
   ) {}
 
   async runOne(): Promise<boolean> {
@@ -40,10 +43,21 @@ export class PublishOutbox {
       try {
         await this.publisher.publish(message);
       } catch (error) {
-        this.logger.error(`SQS publish failed for outbox event ${message.id}`, error);
+        const payload = message.payload;
+        const data = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+          ? payload.data as Record<string, unknown> : {};
+        const correlationId = validCorrelationId(payload.correlationId) ? payload.correlationId : message.id;
+        runWithContext({
+          correlationId,
+          messageId: message.id,
+          ...(typeof data.transactionId === 'string' ? { transactionId: data.transactionId } : {}),
+          ...(typeof data.walletId === 'string' ? { walletId: data.walletId } : {}),
+          ...(typeof data.providerId === 'string' ? { providerId: data.providerId } : {}),
+        }, () => this.logger.error('SQS outbox publication failed', error));
         const attempts = message.attempts + 1;
         const delayMs = Math.min(1000 * 2 ** Math.min(attempts - 1, 10), 300_000);
         await tx.scheduleRetry(message.id, attempts, new Date(this.clock.now().getTime() + delayMs));
+        this.telemetry.retry('outbox');
         return true;
       }
       await tx.markPublished(message.id, this.clock.now());

@@ -14,6 +14,8 @@ import {
 import type { Clock, IdGenerator } from '../ports/clock-and-ids.port';
 import type { StoredTransaction, UnitOfWork, WageringRepositories } from '../ports/wagering-repositories.port';
 import { assertStorableMoney, assertUuid } from './validation';
+import { clearTransactionId, currentContext, updateContext } from '../observability/context';
+import { NOOP_TELEMETRY, type Telemetry } from '../observability/telemetry';
 
 export interface ProcessWagerTransactionCommand {
   idempotencyKey: string;
@@ -59,29 +61,56 @@ export class ProcessWagerTransaction {
     private readonly unitOfWork: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly telemetry: Telemetry = NOOP_TELEMETRY,
+    private readonly logger: { log(message: string): void } = { log() {} },
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
-    const transaction = this.build(command);
-    return this.unitOfWork.run((repositories) => this.executeInTransaction(repositories, transaction));
+    const start = performance.now();
+    try {
+      const transaction = this.build(command);
+      updateContext({ transactionId: transaction.id, walletId: transaction.walletId, providerId: transaction.providerId });
+      const result = await this.unitOfWork.run((repositories) => this.executeInTransaction(repositories, transaction));
+      this.record(result);
+      return result;
+    } finally {
+      this.telemetry.latency('transaction', (performance.now() - start) / 1000);
+    }
   }
 
   async executeMessage(command: ProcessWagerTransactionCommand, message: { consumerName: string; messageId: string; payloadHash: string }): Promise<void> {
     const transaction = this.build(command);
-    await this.unitOfWork.run(async (repositories) => {
+    updateContext({ transactionId: transaction.id, walletId: transaction.walletId, providerId: transaction.providerId });
+    const outcome = await this.unitOfWork.run(async (repositories) => {
       const state = await repositories.inbox.receive(message.consumerName, message.messageId, message.payloadHash, this.clock.now());
-      if (state === 'duplicate') return;
+      if (state === 'duplicate') return { duplicate: true as const };
       if (state === 'conflict') throw new IdempotencyConflictError(`Inbox message ${message.messageId} has a different payload`);
       const result = await this.executeInTransaction(repositories, transaction);
       if (result.status === WagerTransactionStatus.Failed) {
         throw new PermanentMessageError(`Transaction ${result.transactionId} has terminal status FAILED`);
       }
       await repositories.inbox.markProcessed(message.consumerName, message.messageId, this.clock.now());
+      return { duplicate: false as const, result };
     });
+    if (outcome.duplicate) {
+      clearTransactionId();
+      this.telemetry.duplicate('inbox');
+      this.logger.log('Duplicate inbox message');
+    } else {
+      this.record(outcome.result);
+    }
+  }
+
+  record(result: ProcessWagerTransactionResult): void {
+    updateContext({ transactionId: result.transactionId });
+    if (result.idempotentReplay) this.telemetry.duplicate('transaction');
+    else this.telemetry.transaction(result.status);
+    this.logger.log(`Transaction ${result.idempotentReplay ? 'replayed' : 'committed'}: ${result.status}`);
   }
 
   private async executeInTransaction(repositories: WageringRepositories, transaction: WagerTransaction): Promise<ProcessWagerTransactionResult> {
-    if (!(await repositories.transactions.insertIfAbsent(transaction))) {
+    const trace = currentContext();
+    if (!(await repositories.transactions.insertIfAbsent(transaction, trace ? { correlationId: trace.correlationId, causationId: trace.messageId } : undefined))) {
       return this.replay(repositories, transaction);
     }
 
@@ -93,6 +122,7 @@ export class ProcessWagerTransaction {
     repositories: WageringRepositories,
     transaction: WagerTransaction,
     retryCount?: number,
+    trace?: { correlationId?: string | undefined; causationId?: string | undefined },
   ): Promise<ProcessWagerTransactionResult> {
     const { transactions, wallets } = repositories;
     const wallet = await wallets.lockById(transaction.walletId);
@@ -114,7 +144,10 @@ export class ProcessWagerTransaction {
       entryId: this.ids.next(),
       now,
     });
-    const ctx = () => ({ eventId: this.ids.next(), occurredAt: now });
+    const current = currentContext();
+    const ctx = () => ({ eventId: this.ids.next(), occurredAt: now,
+      correlationId: trace?.correlationId ?? current?.correlationId,
+      causationId: trace?.causationId ?? current?.messageId });
 
     switch (outcome.status) {
       case WagerTransactionStatus.Processed: {

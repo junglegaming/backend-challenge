@@ -3,6 +3,7 @@ import { InvalidRequestError } from '../errors';
 import { canonicalJson } from '../../domain/wagering/payload-hash';
 import type { WagerTransactionKind } from '../../domain/wagering/wager-enums';
 import type { ProcessWagerTransaction, ProcessWagerTransactionCommand } from './process-wager-transaction';
+import { currentContext, runWithContext, updateContext, validCorrelationId } from '../observability/context';
 
 const CONSUMER_NAME = 'wager-transactions';
 
@@ -28,6 +29,9 @@ export class ConsumeWagerMessage {
     }
     const message = object(parsed);
     const messageId = text(message.messageId, 'messageId');
+    if (message.correlationId !== undefined && !validCorrelationId(message.correlationId)) {
+      throw new InvalidRequestError('Invalid correlationId');
+    }
     if (text(message.type, 'type') !== 'WagerTransactionRequested') throw new InvalidRequestError('Unsupported message type');
     const occurredAt = text(message.occurredAt, 'occurredAt');
     if (!Number.isFinite(Date.parse(occurredAt))) throw new InvalidRequestError('Invalid occurredAt');
@@ -50,6 +54,18 @@ export class ConsumeWagerMessage {
       referenceExternalTransactionId: reference,
     };
     const payloadHash = createHash('sha256').update(canonicalJson(message)).digest('hex');
-    await this.process.executeMessage(command, { consumerName: CONSUMER_NAME, messageId, payloadHash });
+    const correlationId = message.correlationId ?? (validCorrelationId(messageId) ? messageId : createHash('sha256').update(messageId).digest('hex'));
+    if (typeof correlationId === 'string') {
+      const context = { correlationId, messageId, walletId: command.walletId, providerId: command.providerId };
+      if (currentContext()) {
+        updateContext(context);
+        await this.process.executeMessage(command, { consumerName: CONSUMER_NAME, messageId, payloadHash });
+      } else {
+        await runWithContext(context, () => this.process.executeMessage(command, { consumerName: CONSUMER_NAME, messageId, payloadHash }));
+      }
+    } else {
+      updateContext({ messageId });
+      await this.process.executeMessage(command, { consumerName: CONSUMER_NAME, messageId, payloadHash });
+    }
   }
 }
