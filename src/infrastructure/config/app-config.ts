@@ -2,7 +2,7 @@ export interface AppConfig {
   port: number;
   databaseUrl: string;
   aws: { region: string; endpoint?: string };
-  sqs: { queueUrl: string; dlqUrl: string };
+  sqs: { queueUrl: string; dlqUrl: string; eventsQueueUrl: string };
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {
@@ -17,6 +17,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: Number(env.PORT ?? 3000),
     databaseUrl: required(env, 'DATABASE_URL'),
     aws: { region: env.AWS_REGION ?? 'us-east-1', ...(endpoint ? { endpoint } : {}) },
-    sqs: { queueUrl: required(env, 'SQS_QUEUE_URL'), dlqUrl: required(env, 'SQS_DLQ_URL') },
+    sqs: {
+      queueUrl: required(env, 'SQS_QUEUE_URL'),
+      dlqUrl: required(env, 'SQS_DLQ_URL'),
+      eventsQueueUrl: required(env, 'SQS_EVENTS_QUEUE_URL'),
+    },
   };
 }

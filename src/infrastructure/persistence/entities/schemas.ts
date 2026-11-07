@@ -49,6 +49,8 @@ export const WageringTransactionSchema = new EntitySchema<WageringTransactionRec
     balanceSnapshot: { ...money(), nullable: true },
     createdAt: timestamp(),
     processedAt: { ...timestamp(), nullable: true },
+    referenceRetryCount: { type: 'number', columnType: 'integer', default: 0 },
+    referenceNextAttemptAt: { ...timestamp(), defaultRaw: 'now()' },
   },
 });
 

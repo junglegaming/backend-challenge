@@ -9,6 +9,7 @@ import { ApplicationError, TransientInfrastructureError } from '../../applicatio
 import type { IntegrationEvent } from '../../application/events/integration-event';
 import type {
   LedgerRepository,
+  InboxRepository,
   OutboxRepository,
   StoredTransaction,
   UnitOfWork,
@@ -96,6 +97,25 @@ class SqlWagerTransactionRepository implements WagerTransactionRepository {
       [transactionId],
     );
     return rows.length > 0;
+  }
+
+  async claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number } | undefined> {
+    const [row] = await this.sql.rows(
+      `select ${TRANSACTION_COLUMNS}, reference_retry_count from wagering_transactions
+       where status = 'PENDING_REFERENCE' and reference_next_attempt_at <= ?::timestamptz
+       order by reference_next_attempt_at, id limit 1 for no key update skip locked`,
+      [now.toISOString()],
+    );
+    return row ? { transaction: this.toStored(row).transaction, retryCount: Number(row.reference_retry_count) } : undefined;
+  }
+
+  async scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void> {
+    const updated = await this.sql.affected(
+      `update wagering_transactions set reference_retry_count = ?, reference_next_attempt_at = ?::timestamptz
+       where id = ?::uuid and status = 'PENDING_REFERENCE'`,
+      [retryCount, nextAttemptAt.toISOString(), transactionId],
+    );
+    if (updated !== 1) throw new Error(`pending transaction ${transactionId} could not be scheduled`);
   }
 
   async saveOutcome(tx: WagerTransaction, balanceSnapshot: Money | undefined): Promise<void> {
@@ -229,6 +249,33 @@ class SqlOutboxRepository implements OutboxRepository {
   }
 }
 
+class SqlInboxRepository implements InboxRepository {
+  constructor(private readonly sql: Sql) {}
+
+  async receive(consumerName: string, messageId: string, payloadHash: string, now: Date): Promise<'inserted' | 'duplicate' | 'conflict'> {
+    const inserted = await this.sql.rows(
+      `insert into inbox_messages (consumer_name, message_id, payload_hash, received_at)
+       values (?, ?, ?, ?::timestamptz) on conflict (consumer_name, message_id) do nothing returning message_id`,
+      [consumerName, messageId, payloadHash, now.toISOString()],
+    );
+    if (inserted.length) return 'inserted';
+    const [existing] = await this.sql.rows(
+      'select payload_hash, processed_at from inbox_messages where consumer_name = ? and message_id = ?',
+      [consumerName, messageId],
+    );
+    if (!existing || !existing.processed_at) throw new Error('Inbox conflict without a processed message');
+    return existing.payload_hash === payloadHash ? 'duplicate' : 'conflict';
+  }
+
+  async markProcessed(consumerName: string, messageId: string, now: Date): Promise<void> {
+    const count = await this.sql.affected(
+      'update inbox_messages set processed_at = ?::timestamptz where consumer_name = ? and message_id = ? and processed_at is null',
+      [now.toISOString(), consumerName, messageId],
+    );
+    if (count !== 1) throw new Error('Inbox message could not be marked processed');
+  }
+}
+
 /** SQLSTATE classes/codes after which nothing was committed and a retry may succeed. */
 const TRANSIENT_SQLSTATES = new Set(['40001', '40P01', '55P03', '57014', '57P01', '57P02', '57P03']);
 const TRANSIENT_NODE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND']);
@@ -260,6 +307,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           wallets: new SqlWalletRepository(sql),
           ledger: new SqlLedgerRepository(sql),
           outbox: new SqlOutboxRepository(sql),
+          inbox: new SqlInboxRepository(sql),
         });
       });
     } catch (error) {

@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { type TestDatabase, createTestDatabase } from './support/test-database';
+import { insertTx, insertWallet } from './support/fixtures';
+import { expectWalletMatchesLedger } from './support/http-app';
 
 let db: TestDatabase;
 
@@ -38,7 +40,7 @@ describe('migrations (real PostgreSQL, throwaway database)', () => {
 
   test('every migration is reversible, one step at a time, down to an empty schema', async () => {
     const executed = (await db.orm.migrator.getExecuted()).length;
-    expect(executed).toBe(5);
+    expect(executed).toBe(6);
     for (let remaining = executed - 1; remaining >= 0; remaining--) {
       await db.orm.migrator.down();
       expect(await db.orm.migrator.getExecuted()).toHaveLength(remaining);
@@ -61,6 +63,7 @@ describe('migrations (real PostgreSQL, throwaway database)', () => {
       'wagering_transactions_single_reversal_uq',
       'wagering_transactions_waiting_reference_idx',
       'wagering_transactions_pending_reference_scan_idx',
+      'wagering_transactions_reference_due_idx',
       'wagering_transactions_wallet_idx',
       'wallet_ledger_entries_wallet_seq_idx',
       'wallet_ledger_entries_transaction_idx',
@@ -69,5 +72,20 @@ describe('migrations (real PostgreSQL, throwaway database)', () => {
     ]) {
       expect(names).toContain(expected);
     }
+  });
+
+  test('upgrade preserves existing pending rows and makes them immediately eligible', async () => {
+    await db.orm.migrator.down();
+    const wallet = await insertWallet(db, { balance: '0.00' });
+    const id = await insertTx(db, wallet, {
+      kind: 'REFUND', status: 'PENDING_REFERENCE', referenceExternalTransactionId: 'missing',
+    });
+    await db.orm.migrator.up();
+    const [row] = await db.run<{ reference_retry_count: number; due: boolean }>(
+      `select reference_retry_count, reference_next_attempt_at <= now() as due
+       from wagering_transactions where id = ?`, [id],
+    );
+    expect(row).toEqual({ reference_retry_count: 0, due: true });
+    await expectWalletMatchesLedger(db, wallet.id);
   });
 });

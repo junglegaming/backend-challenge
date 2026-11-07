@@ -11,6 +11,7 @@ describe('GET /health/live', () => {
     process.env.DATABASE_URL ??= 'postgres://wagering:wagering@localhost:5432/wagering';
     process.env.SQS_QUEUE_URL ??= 'http://localhost:4566/000000000000/wager-transactions.fifo';
     process.env.SQS_DLQ_URL ??= 'http://localhost:4566/000000000000/wager-transactions-dlq.fifo';
+    process.env.SQS_EVENTS_QUEUE_URL ??= 'http://localhost:4566/000000000000/wager-events.fifo';
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     await app.listen(0);

@@ -33,6 +33,8 @@ export class WageringTransactionRecord {
   balanceSnapshot?: string | null;
   createdAt!: Date;
   processedAt?: Date | null;
+  referenceRetryCount!: number;
+  referenceNextAttemptAt!: Date;
 }
 
 export class WalletLedgerEntryRecord {
