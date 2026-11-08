@@ -1,5 +1,7 @@
 import { GetQueueAttributesCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import type { EntityManager } from '@mikro-orm/postgresql';
+import { SpanKind } from '@opentelemetry/api';
+import { traced } from '../../application/observability/tracing';
 
 export interface ReadinessReport {
   status: 'ok' | 'unavailable';
@@ -23,12 +25,12 @@ export class Readiness {
 
   async check(): Promise<ReadinessReport> {
     const [postgres, sqs] = await Promise.all([
-      this.probe('postgres', () => this.em.getConnection().execute('select 1')),
+      this.probe('postgres', () => traced('PostgreSQL readiness', SpanKind.CLIENT, () => this.em.getConnection().execute('select 1'))),
       this.probe('sqs', async () => {
         for (const QueueUrl of this.queueUrls) {
-          await this.sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ['QueueArn'] }), {
+          await traced('SQS readiness', SpanKind.CLIENT, () => this.sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ['QueueArn'] }), {
             abortSignal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
-          });
+          }));
         }
       }),
     ]);

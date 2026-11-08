@@ -3,6 +3,8 @@ import type { UnitOfWork } from '../ports/wagering-repositories.port';
 import type { ProcessWagerTransaction } from './process-wager-transaction';
 import { NOOP_TELEMETRY, type Telemetry } from '../observability/telemetry';
 import { runWithContext } from '../observability/context';
+import { SpanKind } from '@opentelemetry/api';
+import { extractTrace, traced } from '../observability/tracing';
 
 export class RetryPendingReference {
   constructor(
@@ -19,8 +21,9 @@ export class RetryPendingReference {
       const context = { correlationId: pending.correlationId ?? pending.transaction.id,
         ...(pending.causationId ? { messageId: pending.causationId } : {}),
         transactionId: pending.transaction.id, walletId: pending.transaction.walletId, providerId: pending.transaction.providerId };
-      const result = await runWithContext(context, () => this.process.processExisting(repositories, pending.transaction, pending.retryCount,
-        { correlationId: pending.correlationId, causationId: pending.causationId }));
+      const result = await traced('wager reference retry', SpanKind.CONSUMER, () =>
+        runWithContext(context, () => this.process.processExisting(repositories, pending.transaction, pending.retryCount,
+          { correlationId: pending.correlationId, causationId: pending.causationId })), extractTrace(pending.traceContext));
       return { context, result };
     });
     if (!outcome) return false;

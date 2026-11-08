@@ -23,6 +23,8 @@ import { Readiness } from './infrastructure/health/readiness';
 import { METRICS } from './application/ports/wallet-queries.port';
 import { PrometheusMetrics } from './infrastructure/observability/prometheus-metrics';
 import { JsonLogger } from './infrastructure/observability/json-logger';
+import { SpanKind } from '@opentelemetry/api';
+import { traced } from './application/observability/tracing';
 
 @Module({
   imports: [MikroOrmModule.forRoot({ ...buildOrmConfig(loadConfig().databaseUrl) }), WageringModule],
@@ -68,14 +70,14 @@ import { JsonLogger } from './infrastructure/observability/json-logger';
         const config = loadConfig();
         const sqs = new SQSClient({ ...config.aws, maxAttempts: 1 });
         metrics.configureProbes(async () => {
-          const [row] = await em.fork().getConnection().execute<{ lag: string }[]>(
-            `select coalesce(extract(epoch from (now() - min(occurred_at))), 0) as lag from outbox_messages where published_at is null`);
+          const [row] = await traced('PostgreSQL outbox lag', SpanKind.CLIENT, () => em.fork().getConnection().execute<{ lag: string }[]>(
+            `select coalesce(extract(epoch from (now() - min(occurred_at))), 0) as lag from outbox_messages where published_at is null`));
           return Math.max(0, Number(row?.lag ?? 0));
         }, async () => {
-          const result = await sqs.send(new GetQueueAttributesCommand({
+          const result = await traced('SQS DLQ attributes', SpanKind.CLIENT, () => sqs.send(new GetQueueAttributesCommand({
             QueueUrl: config.sqs.dlqUrl,
             AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'],
-          }), { abortSignal: AbortSignal.timeout(2000) });
+          }), { abortSignal: AbortSignal.timeout(2000) }));
           const visible = result.Attributes?.ApproximateNumberOfMessages;
           const inFlight = result.Attributes?.ApproximateNumberOfMessagesNotVisible;
           if (visible === undefined || inFlight === undefined) throw new Error('DLQ attributes missing');

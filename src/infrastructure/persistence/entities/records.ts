@@ -37,6 +37,7 @@ export class WageringTransactionRecord {
   referenceNextAttemptAt!: Date;
   correlationId?: string | null;
   causationId?: string | null;
+  traceContext?: Record<string, unknown> | null;
 }
 
 export class WalletLedgerEntryRecord {
@@ -69,4 +70,5 @@ export class OutboxMessageRecord {
   attempts!: number;
   nextAttemptAt!: Date;
   publishedAt?: Date | null;
+  traceContext?: Record<string, unknown> | null;
 }

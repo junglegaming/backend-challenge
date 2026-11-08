@@ -74,3 +74,23 @@ test('scrape reads the real DLQ and oldest unpublished outbox event', async () =
   const event = JSON.parse(delivered.Messages?.[0]?.Body ?? '{}') as { correlationId?: string };
   expect(event.correlationId).toBe('end-to-end-trace');
 });
+
+test('load command exercises all scenarios, duplicates and ledger validation', async () => {
+  const child = Bun.spawn(['bun', 'scripts/load-test.ts'], {
+    env: { ...process.env, LOAD_BASE_URL: await app.getUrl(), LOAD_REQUESTS: '6', LOAD_WALLETS: '2', LOAD_CONCURRENCY: '3' },
+    stdout: 'pipe', stderr: 'pipe',
+  });
+  const [stdout, stderr, status] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  expect(stderr).toBe('');
+  expect(status).toBe(0);
+  const report = JSON.parse(stdout) as {
+    scenarios: { scenario: string; errors: number; duplicates: { expected: number; observed: number; violations: number } }[];
+    reconciliation: { walletsCreated: number; checked: number; failures: string[] };
+  };
+  expect(report.scenarios.map((scenario) => scenario.scenario)).toEqual(['many-wallets', 'hot-wallet', 'mixed-duplicates']);
+  expect(report.scenarios.every((scenario) => scenario.errors === 0)).toBe(true);
+  expect(report.scenarios[2]?.duplicates).toEqual({ expected: 3, observed: 3, violations: 0 });
+  expect(report.reconciliation).toEqual({ walletsCreated: 5, checked: 5, failures: [] });
+});

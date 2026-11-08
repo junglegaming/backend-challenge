@@ -10,6 +10,8 @@ import { correlationId, runWithContext, validCorrelationId } from '../../applica
 import { NOOP_TELEMETRY, type Telemetry } from '../../application/observability/telemetry';
 import { JsonLogger } from '../observability/json-logger';
 import { createHash } from 'node:crypto';
+import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
+import { extractTrace, traced } from '../../application/observability/tracing';
 
 const VISIBILITY_SECONDS = 60;
 
@@ -46,10 +48,20 @@ export class SqsWagerConsumer implements OnModuleInit, OnModuleDestroy {
     const messageId = typeof envelope.messageId === 'string' ? envelope.messageId : message.MessageId;
     const id = validCorrelationId(envelope.correlationId) ? envelope.correlationId
       : messageId && !validCorrelationId(messageId) ? createHash('sha256').update(messageId).digest('hex') : correlationId(messageId);
-    return runWithContext({ correlationId: id, ...(messageId ? { messageId } : {}) }, () => this.handleInContext(message));
+    const traceparent = message.MessageAttributes?.traceparent?.StringValue;
+    const tracestate = message.MessageAttributes?.tracestate?.StringValue;
+    const parent = extractTrace({
+      ...(traceparent ? { traceparent } : {}),
+      ...(tracestate ? { tracestate } : {}),
+    });
+    return traced('SQS process', SpanKind.CONSUMER, (span) => {
+      span.setAttribute('messaging.system', 'aws_sqs');
+      return runWithContext({ correlationId: id, ...(messageId ? { messageId } : {}) }, () => this.handleInContext(message, () =>
+        span.setStatus({ code: SpanStatusCode.ERROR })));
+    }, parent);
   }
 
-  private async handleInContext(message: Message): Promise<void> {
+  private async handleInContext(message: Message, markError: () => void): Promise<void> {
     const started = performance.now();
     const receipt = message.ReceiptHandle;
     if (!receipt || message.Body === undefined) throw new Error('SQS message lacks receipt handle or body');
@@ -65,6 +77,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnModuleDestroy {
       try {
         await this.consume.execute(message.Body);
       } catch (error) {
+        markError();
         const permanent = error instanceof InvalidRequestError || error instanceof InvalidMoneyError
           || error instanceof InvalidTransactionError || error instanceof IdempotencyConflictError
           || error instanceof WalletNotFoundError || error instanceof PermanentMessageError;
@@ -89,6 +102,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnModuleDestroy {
         const response = await this.client.send(new ReceiveMessageCommand({
           QueueUrl: this.queueUrl, MaxNumberOfMessages: 1, WaitTimeSeconds: 10,
           VisibilityTimeout: VISIBILITY_SECONDS, MessageSystemAttributeNames: ['ApproximateReceiveCount'],
+          MessageAttributeNames: ['traceparent', 'tracestate'],
         }), { abortSignal: this.receiveAbort.signal });
         for (const message of response.Messages ?? []) await this.handle(message);
       } catch (error) {

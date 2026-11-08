@@ -20,21 +20,29 @@ import type {
 import { DomainError } from '../../domain/shared/domain-error';
 import { NOOP_TELEMETRY, type Telemetry } from '../../application/observability/telemetry';
 import { decimalText } from './decimal-text';
+import { SpanKind } from '@opentelemetry/api';
+import { captureTrace, parseTraceCarrier, traced, type TraceCarrier } from '../../application/observability/tracing';
 
-export type Row = Record<string, string | number | null>;
+export type Row = Record<string, unknown>;
 
 /** Executes parameterised SQL inside the current MikroORM transaction. */
 export class Sql {
   constructor(private readonly em: EntityManager) {}
 
   rows(sql: string, params: unknown[] = []): Promise<Row[]> {
-    return this.em.getConnection().execute(sql, params, 'all', this.em.getTransactionContext()) as Promise<Row[]>;
+    return traced('PostgreSQL query', SpanKind.CLIENT, (span) => {
+      span.setAttribute('db.system.name', 'postgresql');
+      return this.em.getConnection().execute(sql, params, 'all', this.em.getTransactionContext()) as Promise<Row[]>;
+    });
   }
 
   async affected(sql: string, params: unknown[] = []): Promise<number> {
-    const result = (await this.em
+    const result = (await traced('PostgreSQL query', SpanKind.CLIENT, (span) => {
+      span.setAttribute('db.system.name', 'postgresql');
+      return this.em
       .getConnection()
-      .execute(sql, params, 'run', this.em.getTransactionContext())) as { affectedRows: number };
+      .execute(sql, params, 'run', this.em.getTransactionContext());
+    })) as { affectedRows: number };
     return result.affectedRows;
   }
 }
@@ -54,8 +62,8 @@ export class SqlWagerTransactionRepository implements WagerTransactionRepository
     const rows = await this.sql.rows(
       `insert into wagering_transactions
          (id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id, player_id, round_id,
-          game_id, kind, amount, currency, reference_external_transaction_id, status, created_at, correlation_id, causation_id)
-       select ?::uuid, ?, ?, ?, ?, w.id, ?::uuid, ?, ?, ?, ?::numeric, ?, ?, 'PENDING', ?::timestamptz, ?, ?
+          game_id, kind, amount, currency, reference_external_transaction_id, status, created_at, correlation_id, causation_id, trace_context)
+       select ?::uuid, ?, ?, ?, ?, w.id, ?::uuid, ?, ?, ?, ?::numeric, ?, ?, 'PENDING', ?::timestamptz, ?, ?, ?::jsonb
          from wallets w where w.id = ?::uuid
        on conflict do nothing
        returning id`,
@@ -75,6 +83,7 @@ export class SqlWagerTransactionRepository implements WagerTransactionRepository
         tx.createdAt.toISOString(),
         trace?.correlationId ?? null,
         trace?.causationId ?? null,
+        JSON.stringify(captureTrace()),
         tx.walletId,
       ],
     );
@@ -108,14 +117,14 @@ export class SqlWagerTransactionRepository implements WagerTransactionRepository
     return rows.length > 0;
   }
 
-  async claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined } | undefined> {
+  async claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined; traceContext?: TraceCarrier | undefined } | undefined> {
     const [row] = await this.sql.rows(
-      `select ${TRANSACTION_COLUMNS}, reference_retry_count, correlation_id, causation_id from wagering_transactions
+      `select ${TRANSACTION_COLUMNS}, reference_retry_count, correlation_id, causation_id, trace_context from wagering_transactions
        where status = 'PENDING_REFERENCE' and reference_next_attempt_at <= ?::timestamptz
        order by reference_next_attempt_at, id limit 1 for no key update skip locked`,
       [now.toISOString()],
     );
-    return row ? { transaction: this.toStored(row).transaction, retryCount: Number(row.reference_retry_count), correlationId: optional(row.correlation_id), causationId: optional(row.causation_id) } : undefined;
+    return row ? { transaction: this.toStored(row).transaction, retryCount: Number(row.reference_retry_count), correlationId: optional(row.correlation_id), causationId: optional(row.causation_id), traceContext: parseTraceCarrier(row.trace_context) } : undefined;
   }
 
   async scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void> {
@@ -251,9 +260,9 @@ class SqlOutboxRepository implements OutboxRepository {
 
   async enqueue(event: IntegrationEvent<unknown>): Promise<void> {
     await this.sql.rows(
-      `insert into outbox_messages (id, aggregate_id, event_type, payload, occurred_at)
-       values (?::uuid, ?::uuid, ?, ?::jsonb, ?::timestamptz)`,
-      [event.eventId, event.aggregateId, event.eventType, JSON.stringify(event), event.occurredAt.toISOString()],
+      `insert into outbox_messages (id, aggregate_id, event_type, payload, occurred_at, trace_context)
+       values (?::uuid, ?::uuid, ?, ?::jsonb, ?::timestamptz, ?::jsonb)`,
+      [event.eventId, event.aggregateId, event.eventType, JSON.stringify(event), event.occurredAt.toISOString(), JSON.stringify(captureTrace())],
     );
   }
 }

@@ -1,0 +1,22 @@
+{
+  "uid": "wagering-overview",
+  "title": "Wagering - Observabilidade",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    { "id": 1, "type": "timeseries", "title": "Transações por status / s", "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "sum by (status) (rate(wager_transactions_total[5m]))", "legendFormat": "{{status}}", "refId": "A" }] },
+    { "id": 2, "type": "timeseries", "title": "Duplicatas / s", "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "sum by (source) (rate(wager_duplicates_total[5m]))", "legendFormat": "{{source}}", "refId": "A" }] },
+    { "id": 3, "type": "timeseries", "title": "Retries / s", "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "sum by (source) (rate(wager_retries_total[5m]))", "legendFormat": "{{source}}", "refId": "A" }] },
+    { "id": 4, "type": "timeseries", "title": "Conflitos de lock / s", "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "sum(rate(wager_lock_conflicts_total[5m]))", "refId": "A" }] },
+    { "id": 5, "type": "timeseries", "title": "Mensagens na DLQ (aproximado)", "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "max(wager_dlq_messages)", "refId": "A" }] },
+    { "id": 6, "type": "timeseries", "title": "Idade do evento mais antigo da outbox", "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 }, "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "max(wager_outbox_oldest_unpublished_seconds)", "refId": "A" }] },
+    { "id": 7, "type": "timeseries", "title": "Latência por operação (p50/p95/p99)", "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 }, "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [
+      { "expr": "histogram_quantile(0.50, sum by (le, operation) (rate(wager_operation_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}} p50", "refId": "A" },
+      { "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(wager_operation_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}} p95", "refId": "B" },
+      { "expr": "histogram_quantile(0.99, sum by (le, operation) (rate(wager_operation_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}} p99", "refId": "C" }
+    ] },
+    { "id": 8, "type": "timeseries", "title": "Divergências de reconciliação / s", "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 }, "datasource": { "type": "prometheus", "uid": "prometheus" }, "targets": [{ "expr": "sum by (currency) (rate(wallet_reconciliation_divergence_total[5m]))", "legendFormat": "{{currency}}", "refId": "A" }] }
+  ]
+}
