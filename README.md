@@ -766,6 +766,8 @@ OpenTelemetry e dashboard são opcionais.
 - retry e DLQ;
 - recuperação após reinicialização.
 
+O teste que envia `SIGTERM` real ao processo Nest é executado em Linux/macOS e ignorado no Windows, onde a terminação de um processo filho não entrega esse sinal para desligamento gracioso. O teste de drenagem via ciclo de vida do Nest continua sendo executado no Windows.
+
 ### Concorrência (paralelismo real, não mocks sequenciais)
 
 1. a mesma aposta enviada **50 vezes em paralelo** → um único débito;

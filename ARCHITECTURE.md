@@ -93,7 +93,7 @@ Payload malformado (valor inválido, campo vazio, kind desconhecido, `OPENING`, 
 - **Money:** `MoneyAmountType` mapeia `NUMERIC(20,2)` ⇄ string decimal; `number` é rejeitado.
 - **Eficiência / N+1:** FKs são colunas escalares nos `EntitySchema` (sem `ManyToOne`, nada de lazy-load acidental); `loadStrategy: 'joined'` por padrão; leituras em lote com `$in`. Índices cobrem cada caminho quente (idempotência, provider+external, "quem espera esta referência", scan do worker, histórico por wallet, ledger por transação, keyset por `seq`, reconciliação index-only via `INCLUDE (direction, amount)`, claim do outbox). Testes usam `EXPLAIN` (com seqscan/bitmap desabilitados) e provam contagem de queries constante (N=5 vs 40).
 - **Limitação:** superuser pode desabilitar triggers. Em produção, a aplicação deve usar um role sem `ALTER TABLE`/`DISABLE TRIGGER`.
-- `outbox.next_attempt_at` é `NOT NULL DEFAULT now()`; o mapper trata o opcional do domínio.
+- `outbox.next_attempt_at` é `NOT NULL DEFAULT now()`; na inserção pela aplicação, começa em `occurred_at`, usando o mesmo relógio dos eventos e do publisher. Retries recebem datas explícitas; relógios das instâncias da aplicação devem estar sincronizados.
 
 ## ADR-006: ProcessWagerTransaction, OpenWallet e mapeamento HTTP (Etapa 5)
 

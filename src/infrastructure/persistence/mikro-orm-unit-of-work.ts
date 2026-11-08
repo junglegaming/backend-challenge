@@ -260,9 +260,10 @@ class SqlOutboxRepository implements OutboxRepository {
 
   async enqueue(event: IntegrationEvent<unknown>): Promise<void> {
     await this.sql.rows(
-      `insert into outbox_messages (id, aggregate_id, event_type, payload, occurred_at, trace_context)
-       values (?::uuid, ?::uuid, ?, ?::jsonb, ?::timestamptz, ?::jsonb)`,
-      [event.eventId, event.aggregateId, event.eventType, JSON.stringify(event), event.occurredAt.toISOString(), JSON.stringify(captureTrace())],
+      `insert into outbox_messages (id, aggregate_id, event_type, payload, occurred_at, next_attempt_at, trace_context)
+       values (?::uuid, ?::uuid, ?, ?::jsonb, ?::timestamptz, ?::timestamptz, ?::jsonb)`,
+      [event.eventId, event.aggregateId, event.eventType, JSON.stringify(event), event.occurredAt.toISOString(),
+        event.occurredAt.toISOString(), JSON.stringify(captureTrace())],
     );
   }
 }

@@ -283,7 +283,7 @@ describe('SQS consumer with PostgreSQL and LocalStack', () => {
     await expectWalletMatchesLedger(db, w.id);
   });
 
-  test('SIGTERM drains an in-flight message before the Nest process exits', async () => {
+  test.skipIf(process.platform === 'win32')('SIGTERM drains an in-flight message before the Nest process exits', async () => {
     const w = await wallet();
     const body = message(w);
     const holder = db.orm.em.fork();

@@ -9,7 +9,8 @@ import { createTestDatabase } from './support/test-database';
 
 test('outbox publisher cannot see or publish uncommitted financial events', async () => {
   const db = await createTestDatabase();
-  const clock = { now: () => new Date() };
+  const now = new Date(Date.now() - 60_000);
+  const clock = { now: () => new Date(now) };
   let release!: () => void;
   let ready!: () => void;
   const paused = new Promise<void>((resolve) => { ready = resolve; });
