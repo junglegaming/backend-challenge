@@ -1,8 +1,5 @@
 #!/bin/bash
-# Runs inside LocalStack when it reaches the "ready" stage.
 set -e
-awslocal sqs create-queue --queue-name wager-transactions.fifo 
---attributes FifoQueue=true,ContentBasedDeduplication=true
 
 awslocal sqs create-queue --queue-name wager-transactions-dlq.fifo \
   --attributes FifoQueue=true,ContentBasedDeduplication=false,MessageRetentionPeriod=1209600
