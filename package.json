@@ -10,6 +10,7 @@
     "test:unit": "bun test test/unit",
     "test:integration": "bun test --timeout 60000 test/integration",
     "test:load": "bun scripts/load-test.ts",
+    "test:observability": "bun scripts/validate-observability.ts",
     "migrate": "bun src/infrastructure/persistence/migrate.ts up",
     "migrate:down": "bun src/infrastructure/persistence/migrate.ts down",
     "migrate:status": "bun src/infrastructure/persistence/migrate.ts status",
