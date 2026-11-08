@@ -8,6 +8,8 @@ import { IntegrationEvent } from './integration-event';
 export interface EventContext {
   eventId: string;
   occurredAt: Date;
+  correlationId?: string | undefined;
+  causationId?: string | undefined;
 }
 
 interface TransactionData {
@@ -35,7 +37,8 @@ const transactionData = (tx: WagerTransaction): TransactionData => ({
 const base = (tx: WagerTransaction, ctx: EventContext) => ({
   eventId: ctx.eventId,
   aggregateId: tx.walletId,
-  correlationId: tx.id,
+  correlationId: ctx.correlationId ?? tx.id,
+  ...(ctx.causationId ? { causationId: ctx.causationId } : {}),
   occurredAt: ctx.occurredAt,
 });
 
@@ -107,7 +110,8 @@ export class WalletBalanceChanged extends IntegrationEvent<WalletBalanceChangedD
     return new WalletBalanceChanged({
       eventId: ctx.eventId,
       aggregateId: wallet.id,
-      correlationId: entry.transactionId,
+      correlationId: ctx.correlationId ?? entry.transactionId,
+      ...(ctx.causationId ? { causationId: ctx.causationId } : {}),
       occurredAt: ctx.occurredAt,
       data: {
         walletId: wallet.id,

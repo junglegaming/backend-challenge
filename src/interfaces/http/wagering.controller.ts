@@ -1,9 +1,11 @@
-import { Body, Controller, Headers, HttpCode, HttpStatus, Inject, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Inject, Param, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import type { OpenWallet } from '../../application/wagering/open-wallet';
 import type { ProcessWagerTransaction } from '../../application/wagering/process-wager-transaction';
+import { GetTransaction, GetWallet, ListLedger, ReconcileWallet } from '../../application/wagering/wallet-queries';
 import { WagerTransactionStatus } from '../../domain/wagering/wager-enums';
 import { OPEN_WALLET, PROCESS_WAGER_TRANSACTION } from './tokens';
+import { updateContext } from '../../application/observability/context';
 
 type Json = Record<string, unknown>;
 
@@ -12,7 +14,42 @@ export class WageringController {
   constructor(
     @Inject(OPEN_WALLET) private readonly openWallet: OpenWallet,
     @Inject(PROCESS_WAGER_TRANSACTION) private readonly processWager: ProcessWagerTransaction,
+    @Inject(GetWallet) private readonly getWallet: GetWallet,
+    @Inject(ListLedger) private readonly listLedger: ListLedger,
+    @Inject(GetTransaction) private readonly getTransaction: GetTransaction,
+    @Inject(ReconcileWallet) private readonly reconcileWallet: ReconcileWallet,
   ) {}
+
+  @Get('wallets/:id')
+  wallet(@Param('id') id: string): Promise<unknown> {
+    updateContext({ walletId: id });
+    return this.getWallet.execute(id);
+  }
+
+  @Get('wallets/:id/ledger')
+  ledger(@Param('id') id: string, @Query('cursor') cursor?: string, @Query('limit') limit?: string): Promise<unknown> {
+    updateContext({ walletId: id });
+    return this.listLedger.execute(id, { cursor, limit });
+  }
+
+  @Post('wallets/:id/reconciliation')
+  @HttpCode(HttpStatus.OK)
+  reconciliation(@Param('id') id: string): Promise<unknown> {
+    updateContext({ walletId: id });
+    return this.reconcileWallet.execute(id);
+  }
+
+  @Get('wagering/transactions/:id')
+  transaction(@Param('id') id: string): Promise<unknown> {
+    updateContext({ transactionId: id });
+    return this.getTransaction.byId(id);
+  }
+
+  @Get('providers/:providerId/wagering/transactions/:externalId')
+  providerTransaction(@Param('providerId') providerId: string, @Param('externalId') externalId: string): Promise<unknown> {
+    updateContext({ providerId });
+    return this.getTransaction.byProvider(providerId, externalId);
+  }
 
   @Post('wallets')
   @HttpCode(HttpStatus.CREATED)

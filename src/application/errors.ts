@@ -34,11 +34,27 @@ export class WalletNotFoundError extends ApplicationError {
   }
 }
 
+export class TransactionNotFoundError extends ApplicationError {
+  readonly code = 'TRANSACTION_NOT_FOUND';
+
+  constructor(description: string) {
+    super(`transaction ${description} not found`);
+  }
+}
+
 export class WalletAlreadyExistsError extends ApplicationError {
   readonly code = 'WALLET_ALREADY_EXISTS';
 
   constructor(playerId: string, currency: string) {
     super(`player ${playerId} already has a ${currency} wallet`);
+  }
+}
+
+export class PermanentMessageError extends ApplicationError {
+  readonly code = 'PERMANENT_MESSAGE_FAILURE';
+
+  constructor(message: string) {
+    super(message);
   }
 }
 

@@ -12,4 +12,7 @@ DLQ_ARN=$(awslocal sqs get-queue-attributes \
 awslocal sqs create-queue --queue-name wager-transactions.fifo \
   --attributes "{\"FifoQueue\":\"true\",\"ContentBasedDeduplication\":\"false\",\"VisibilityTimeout\":\"30\",\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\"${DLQ_ARN}\\\",\\\"maxReceiveCount\\\":\\\"5\\\"}\"}"
 
+awslocal sqs create-queue --queue-name wager-events.fifo \
+  --attributes FifoQueue=true,ContentBasedDeduplication=false,VisibilityTimeout=30
+
 echo "SQS queues ready"

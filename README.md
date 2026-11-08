@@ -1,5 +1,73 @@
 # Technical Challenge — Distributed Wagering Processor
 
+## Executar o projeto
+
+**Pré-requisitos:** Bun 1.x, Docker com Compose v2 e as portas 3000, 3001, 4318, 5432, 9090, 16686 e 4566 livres. A autenticação é **no-op** neste desafio: não exponha esta configuração em produção.
+
+Subir tudo (a aplicação aplica as migrations antes de iniciar):
+
+```bash
+docker compose up --build
+curl http://localhost:3000/health/ready
+```
+
+Para desenvolver com a aplicação no host:
+
+```bash
+docker compose up -d postgres localstack
+cp .env.example .env
+bun install --frozen-lockfile
+bun run migrate
+bun run dev
+```
+
+Espere os healthchecks de Postgres e LocalStack antes das migrations. O hook `docker/localstack/init-queues.sh` cria as filas FIFO, inclusive a DLQ e o redrive. `.env.example` contém valores **locais de desenvolvimento**, não credenciais de produção. `DATABASE_URL`, `SQS_QUEUE_URL`, `SQS_DLQ_URL` e `SQS_EVENTS_QUEUE_URL` são obrigatórios; `AWS_REGION`, credenciais AWS e `SQS_ENDPOINT` configuram o cliente. `LOCK_TIMEOUT_MS` é opcional (padrão 5000).
+
+```bash
+bun run typecheck
+bun run lint
+bun run test:unit         # sem infraestrutura
+bun run test              # unitários + health e2e; usa a configuração do .env
+bun run test:integration  # PostgreSQL e LocalStack reais
+bun run test:load         # carga HTTP; cria dados permanentes, apenas ambiente isolado
+bun run test:observability # valida Jaeger, Prometheus e Grafana; cria uma wallet permanente
+bun run migrate:status
+bun run migrate:down      # reverte a última migration
+```
+
+Os testes de integração criam e removem bancos e filas isolados: o usuário PostgreSQL precisa ter permissão `CREATEDB`. Eles iniciam processos Bun adicionais e exercitam concorrência, reinício, SQS e DLQ. Não execute contra um banco de produção. Para parar os serviços, use `docker compose down`; o volume do Postgres permanece.
+
+O teste de carga precisa da aplicação em execução e não remove os dados criados. Cenários, parâmetros, métricas e resultados observados estão em [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md).
+
+### Uso e observabilidade
+
+```bash
+curl -s -X POST http://localhost:3000/wallets \
+  -H 'Content-Type: application/json' -H 'X-Correlation-Id: exemplo-1' \
+  -d '{"playerId":"11111111-1111-4111-8111-111111111111","initialBalance":{"amount":"100.00","currency":"BRL"}}'
+curl http://localhost:3000/health/live
+curl http://localhost:3000/health/ready
+curl http://localhost:3000/metrics
+```
+
+Os endpoints estão descritos na seção 9 abaixo. A leitura do ledger usa `limit` de 1 a 100 (padrão 50) e devolve `items` e `nextCursor`; reutilize o cursor opaco na mesma wallet. A reconciliação devolve `OK` ou `DIVERGENT` e **não corrige** o saldo.
+
+HTTP aceita `X-Correlation-Id` (1–128 caracteres ASCII alfanuméricos, `.`, `_`, `:`, `-`); quando ausente, gera UUID e o devolve no mesmo header. Mensagens SQS aceitam `correlationId` no envelope; se ausente, usam o `messageId` (ou seu SHA-256 se não estiver no formato aceito). O contexto segue até os eventos da outbox e permanece nos retries. Logs JSON incluem os identificadores disponíveis, sem corpo ou valores financeiros.
+
+`/metrics` usa `prom-client`: `wager_transactions_total` (resultados commitados por status), `wager_duplicates_total`, `wager_retries_total`, `wager_lock_conflicts_total`, `wager_operation_duration_seconds`, `wallet_reconciliation_divergence_total`, `wager_outbox_oldest_unpublished_seconds` e `wager_dlq_messages`. Os contadores são por processo, não uma contabilidade durável; agregue as instâncias no Prometheus. O tamanho da DLQ é aproximado, consultado no SQS, incluindo mensagens visíveis e em voo. O lag é a idade do evento não publicado mais antigo. Se uma consulta de métricas falhar, o scrape falha em vez de reportar zero. Restrinja `/metrics` na rede em produção.
+
+### Jaeger e Grafana
+
+Com `docker compose up --build`, acesse [Jaeger](http://localhost:16686), selecione o serviço `wagering-processor` e clique em **Find Traces** após gerar uma requisição. Os spans cobrem HTTP, consultas SQL e processamento/publicação SQS; `traceparent`/`tracestate` W3C são propagados pelos atributos SQS e persistidos na outbox e em retries de referência. Os spans não incluem o SQL, parâmetros nem valores financeiros. O armazenamento padrão do Jaeger é em memória e não sobrevive ao reinício.
+
+Abra [Grafana](http://localhost:3001), entre com **admin / admin** (credenciais locais de desenvolvimento) e acesse **Dashboards → Wagering → Wagering - Observabilidade**. O dashboard e as fontes Prometheus e Jaeger são provisionados automaticamente. O [Prometheus](http://localhost:9090) coleta `/metrics` a cada cinco segundos; gráficos com `rate` precisam de pelo menos duas coletas e métricas rotuladas só aparecem depois de ocorrerem eventos. Jaeger, Grafana e Prometheus estão vinculados ao localhost, e a configuração é apenas para desenvolvimento, sem segurança ou persistência adequada para produção.
+
+Para validar a instalação completa, execute `bun run test:observability` com a stack pronta. O comando cria uma wallet com saldo inicial, aguarda os spans HTTP/SQL/SQS no Jaeger e verifica o dashboard, a conexão Grafana–Prometheus e a coleta. **Os dados criados são permanentes**: use um ambiente isolado. Os endereços podem ser alterados com `OBS_APP_URL`, `OBS_JAEGER_URL`, `OBS_PROMETHEUS_URL`, `OBS_GRAFANA_URL`, `OBS_GRAFANA_USER` e `OBS_GRAFANA_PASSWORD`.
+
+Para executar a aplicação no host com tracing, inicie Jaeger, Prometheus e Grafana pelo Compose e defina `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces` e `OTEL_SERVICE_NAME=wagering-processor` antes de `bun run dev`. Sem o endpoint, tracing fica desativado; defina `OTEL_SDK_DISABLED=true` para desabilitá-lo explicitamente. A configuração Prometheus padrão aponta para `app:3000` na rede Compose, não para o processo no host.
+
+---
+
 ## Bem-vindo à Jungle Gaming 🦧
 
 A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.

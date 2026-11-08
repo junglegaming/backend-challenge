@@ -49,6 +49,11 @@ export const WageringTransactionSchema = new EntitySchema<WageringTransactionRec
     balanceSnapshot: { ...money(), nullable: true },
     createdAt: timestamp(),
     processedAt: { ...timestamp(), nullable: true },
+    referenceRetryCount: { type: 'number', columnType: 'integer', default: 0 },
+    referenceNextAttemptAt: { ...timestamp(), defaultRaw: 'now()' },
+    correlationId: { type: 'string', columnType: 'text', nullable: true },
+    causationId: { type: 'string', columnType: 'text', nullable: true },
+    traceContext: { type: 'json', nullable: true },
   },
 });
 
@@ -93,6 +98,7 @@ export const OutboxMessageSchema = new EntitySchema<OutboxMessageRecord>({
     attempts: { type: 'number', columnType: 'integer', default: 0 },
     nextAttemptAt: timestamp(),
     publishedAt: { ...timestamp(), nullable: true },
+    traceContext: { type: 'json', nullable: true },
   },
 });
 

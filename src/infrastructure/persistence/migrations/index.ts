@@ -5,6 +5,9 @@ import { Migration20261106000002_wallets } from './Migration20261106000002_walle
 import { Migration20261106000003_wagering_transactions } from './Migration20261106000003_wagering_transactions';
 import { Migration20261106000004_wallet_ledger_entries } from './Migration20261106000004_wallet_ledger_entries';
 import { Migration20261106000005_inbox_outbox } from './Migration20261106000005_inbox_outbox';
+import { Migration20261107000006_reference_retry } from './Migration20261107000006_reference_retry';
+import { Migration20261107000007_correlation } from './Migration20261107000007_correlation';
+import { Migration20261107000008_trace_context } from './Migration20261107000008_trace_context';
 
 const classes: Constructor<Migration>[] = [
   Migration20261106000001_baseline,
@@ -12,6 +15,9 @@ const classes: Constructor<Migration>[] = [
   Migration20261106000003_wagering_transactions,
   Migration20261106000004_wallet_ledger_entries,
   Migration20261106000005_inbox_outbox,
+  Migration20261107000006_reference_retry,
+  Migration20261107000007_correlation,
+  Migration20261107000008_trace_context,
 ];
 
 export const migrations = classes.map((cls) => ({ name: cls.name, class: cls }));

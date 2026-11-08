@@ -3,6 +3,7 @@ import type { WagerTransaction } from '../../domain/wagering/wager-transaction';
 import type { Wallet } from '../../domain/wallet/wallet';
 import type { WalletLedgerEntry } from '../../domain/wallet/wallet-ledger-entry';
 import type { IntegrationEvent } from '../events/integration-event';
+import type { TraceCarrier } from '../observability/tracing';
 
 export interface StoredTransaction {
   transaction: WagerTransaction;
@@ -15,13 +16,15 @@ export interface WagerTransactionRepository {
    * `INSERT ... ON CONFLICT DO NOTHING` of a PENDING transaction. Returns false when the idempotency key
    * (or provider + external id) already exists, or when the wallet does not exist.
    */
-  insertIfAbsent(transaction: WagerTransaction): Promise<boolean>;
+  insertIfAbsent(transaction: WagerTransaction, trace?: { correlationId: string; causationId?: string | undefined }): Promise<boolean>;
   findByIdempotencyKey(key: string): Promise<StoredTransaction | undefined>;
   findByProviderAndExternalId(providerId: string, externalTransactionId: string): Promise<StoredTransaction | undefined>;
   /** True when a PROCESSED REFUND/ROLLBACK already targets the given transaction. */
   isReversed(transactionId: string): Promise<boolean>;
   /** Persists the outcome (status, failure code, reference, snapshot, processedAt) of a locked transaction. */
   saveOutcome(transaction: WagerTransaction, balanceSnapshot: Money | undefined): Promise<void>;
+  claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined; traceContext?: TraceCarrier | undefined } | undefined>;
+  scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void>;
 }
 
 export interface WalletRepository {
@@ -41,11 +44,17 @@ export interface OutboxRepository {
   enqueue(event: IntegrationEvent<unknown>): Promise<void>;
 }
 
+export interface InboxRepository {
+  receive(consumerName: string, messageId: string, payloadHash: string, now: Date): Promise<'inserted' | 'duplicate' | 'conflict'>;
+  markProcessed(consumerName: string, messageId: string, now: Date): Promise<void>;
+}
+
 export interface WageringRepositories {
   transactions: WagerTransactionRepository;
   wallets: WalletRepository;
   ledger: LedgerRepository;
   outbox: OutboxRepository;
+  inbox: InboxRepository;
 }
 
 export const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
