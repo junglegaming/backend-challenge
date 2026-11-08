@@ -1,0 +1,40 @@
+{
+  "name": "distributed-wagering-processor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Distributed wagering processor: wallets, ledger, idempotent wager transactions over HTTP and SQS.",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch run src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "infra:up": "docker compose up -d postgres sqs",
+    "infra:down": "docker compose down -v",
+    "migration:up": "bun run src/database/migrar.ts up",
+    "migration:down": "bun run src/database/migrar.ts down",
+    "test": "bun test --timeout 180000",
+    "test:unit": "bun test test/unit",
+    "test:integration": "bun test --timeout 120000 test/integration",
+    "test:concurrency": "bun test --timeout 180000 test/concurrency"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1163.0",
+    "@mikro-orm/core": "6.6.17",
+    "@mikro-orm/migrations": "6.6.17",
+    "@mikro-orm/postgresql": "6.6.17",
+    "@nestjs/common": "^11.2.8",
+    "@nestjs/core": "^11.2.8",
+    "@nestjs/platform-express": "^11.2.8",
+    "decimal.js": "^10.6.0",
+    "pino": "^9.14.0",
+    "prom-client": "^15.1.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/express": "^5.0.3",
+    "typescript": "^5.9.3"
+  }
+}

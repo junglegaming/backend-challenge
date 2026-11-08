@@ -1,0 +1,63 @@
+# Ambiente local: PostgreSQL + SQS (LocalStack) + 3 instâncias da aplicação.
+#   docker compose up -d --build        → tudo
+#   docker compose up -d postgres sqs   → só a infra (para rodar os testes no host)
+# Para usar o MiniStack no lugar do LocalStack: SQS_IMAGE=ministackorg/ministack docker compose up -d
+
+x-app: &app
+  build: .
+  environment: &app-env
+    DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+    SQS_ENDPOINT: http://sqs:4566
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    LOG_LEVEL: info
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    sqs:
+      condition: service_healthy
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering"]
+      interval: 2s
+      retries: 30
+
+  sqs:
+    image: ${SQS_IMAGE:-localstack/localstack:3.8}
+    environment:
+      SERVICES: sqs
+    ports: ["4566:4566"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || wget -qO- http://localhost:4566/ >/dev/null"]
+      interval: 3s
+      retries: 40
+
+  migrate:
+    build: .
+    command: ["bun", "run", "src/database/migrar.ts", "up"]
+    environment:
+      DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app-1:
+    <<: *app
+    ports: ["3001:3000"]
+  app-2:
+    <<: *app
+    ports: ["3002:3000"]
+  app-3:
+    <<: *app
+    ports: ["3003:3000"]
