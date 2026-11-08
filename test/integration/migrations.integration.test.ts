@@ -40,7 +40,7 @@ describe('migrations (real PostgreSQL, throwaway database)', () => {
 
   test('every migration is reversible, one step at a time, down to an empty schema', async () => {
     const executed = (await db.orm.migrator.getExecuted()).length;
-    expect(executed).toBe(7);
+    expect(executed).toBe(8);
     for (let remaining = executed - 1; remaining >= 0; remaining--) {
       await db.orm.migrator.down();
       expect(await db.orm.migrator.getExecuted()).toHaveLength(remaining);
@@ -75,6 +75,7 @@ describe('migrations (real PostgreSQL, throwaway database)', () => {
   });
 
   test('upgrade preserves existing pending rows and makes them immediately eligible', async () => {
+    await db.orm.migrator.down();
     await db.orm.migrator.down();
     await db.orm.migrator.down();
     const wallet = await insertWallet(db, { balance: '0.00' });

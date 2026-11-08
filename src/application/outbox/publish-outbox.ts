@@ -1,12 +1,14 @@
 import type { Clock } from '../ports/clock-and-ids.port';
 import { NOOP_TELEMETRY, type Telemetry } from '../observability/telemetry';
 import { runWithContext, validCorrelationId } from '../observability/context';
+import type { TraceCarrier } from '../observability/tracing';
 
 export interface PendingOutboxMessage {
   id: string;
   aggregateId: string;
   payload: Record<string, unknown>;
   attempts: number;
+  traceContext?: TraceCarrier | undefined;
 }
 
 export interface OutboxPublisherTransaction {

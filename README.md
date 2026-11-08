@@ -29,11 +29,14 @@ bun run lint
 bun run test:unit         # sem infraestrutura
 bun run test              # unitários + health e2e; usa a configuração do .env
 bun run test:integration  # PostgreSQL e LocalStack reais
+bun run test:load         # carga HTTP; cria dados permanentes, apenas ambiente isolado
 bun run migrate:status
 bun run migrate:down      # reverte a última migration
 ```
 
 Os testes de integração criam e removem bancos e filas isolados: o usuário PostgreSQL precisa ter permissão `CREATEDB`. Eles iniciam processos Bun adicionais e exercitam concorrência, reinício, SQS e DLQ. Não execute contra um banco de produção. Para parar os serviços, use `docker compose down`; o volume do Postgres permanece.
+
+O teste de carga precisa da aplicação em execução e não remove os dados criados. Cenários, parâmetros, métricas e resultados observados estão em [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md).
 
 ### Uso e observabilidade
 

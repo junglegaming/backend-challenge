@@ -3,6 +3,7 @@ import type { WagerTransaction } from '../../domain/wagering/wager-transaction';
 import type { Wallet } from '../../domain/wallet/wallet';
 import type { WalletLedgerEntry } from '../../domain/wallet/wallet-ledger-entry';
 import type { IntegrationEvent } from '../events/integration-event';
+import type { TraceCarrier } from '../observability/tracing';
 
 export interface StoredTransaction {
   transaction: WagerTransaction;
@@ -22,7 +23,7 @@ export interface WagerTransactionRepository {
   isReversed(transactionId: string): Promise<boolean>;
   /** Persists the outcome (status, failure code, reference, snapshot, processedAt) of a locked transaction. */
   saveOutcome(transaction: WagerTransaction, balanceSnapshot: Money | undefined): Promise<void>;
-  claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined } | undefined>;
+  claimDueReference(now: Date): Promise<{ transaction: WagerTransaction; retryCount: number; correlationId?: string | undefined; causationId?: string | undefined; traceContext?: TraceCarrier | undefined } | undefined>;
   scheduleReferenceRetry(transactionId: string, retryCount: number, nextAttemptAt: Date): Promise<void>;
 }
 
