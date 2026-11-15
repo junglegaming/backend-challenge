@@ -1,0 +1,90 @@
+name: wagering
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+  AWS_ENDPOINT_URL: http://localstack:4566
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  LOG_LEVEL: info
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    command: ["postgres", "-c", "max_connections=300"]
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:3.8.1
+    environment:
+      SERVICES: sqs
+      SQS_ENDPOINT_STRATEGY: path
+    ports:
+      - "127.0.0.1:4566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4566/_localstack/health | grep -q '\"sqs\": \"\\(available\\|running\\)\"'"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  # one-shot: versioned migrations + queue provisioning
+  setup:
+    build: { context: ., target: runtime }
+    environment: *app-env
+    command: ["sh", "-c", "bun scripts/migrate.ts up && bun scripts/setup-queues.ts"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+    restart: "no"
+
+  # three identical instances: HTTP + SQS consumer + outbox publisher + pending-reference worker
+  app:
+    build: { context: ., target: runtime }
+    environment: *app-env
+    deploy:
+      replicas: 3
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # round-robin load balancer in front of the replicas
+  gateway:
+    build: { context: ./docker, dockerfile: gateway.Dockerfile }
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      app: { condition: service_healthy }
+
+  # test runner — only Docker is needed on the host:
+  #   docker compose run --rm tests                        (whole suite)
+  #   docker compose run --rm tests bun run test:unit      (any package script)
+  #   docker compose run --rm tests bun run test:load      (load test against the gateway)
+  # Each test file creates its own database and queues, so it can run next to the app replicas.
+  tests:
+    build: { context: ., target: test }
+    profiles: ["test"]
+    environment:
+      DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      BASE_URL: http://gateway:8080
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
