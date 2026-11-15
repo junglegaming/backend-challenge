@@ -25,6 +25,7 @@ import { ReconcileWallet } from './application/reconcile-wallet';
 import { ResolvePendingReferences } from './application/resolve-pending-references';
 import { SubmitWagerTransaction } from './application/submit-wager-transaction';
 import { WagerProcessor } from './application/wager-processor';
+import { WALLET_ADMISSION, WalletAdmission } from './application/wallet-admission';
 import { UNIT_OF_WORK, type UnitOfWork } from './domain/ports/repositories';
 import { CLOCK, type Clock, ID_GENERATOR, systemClock, uuidV7Generator } from './domain/ports/system';
 import { APP_CONFIG, type AppConfig } from './infrastructure/config/app-config';
@@ -131,6 +132,15 @@ export class AppModule implements NestModule {
               statementTimeoutMs: config.DB_STATEMENT_TIMEOUT_MS,
               onLockConflict: (reason) => metrics.lockConflict(reason),
             }),
+        },
+        {
+          provide: WALLET_ADMISSION,
+          inject: [PrometheusMetrics],
+          useFactory: (metrics: PrometheusMetrics) =>
+            new WalletAdmission(
+              { maxInFlight: config.WALLET_MAX_IN_FLIGHT, maxQueue: config.WALLET_MAX_QUEUE, maxWaitMs: config.WALLET_MAX_WAIT_MS },
+              (outcome) => metrics.walletAdmission(outcome),
+            ),
         },
         { provide: SqsGateway, useFactory: () => new SqsGateway(config) },
         { provide: AUTHENTICATOR, useClass: NoopAuthenticator },

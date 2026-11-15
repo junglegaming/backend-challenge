@@ -13,6 +13,7 @@ export interface WageringMetrics {
   lockConflict(reason: string): void;
   processingDuration(source: Source, seconds: number): void;
   reconciliationMismatch(walletId: string): void;
+  walletAdmission(outcome: 'immediate' | 'queued' | 'rejected'): void;
 }
 
 export const WAGERING_METRICS = Symbol('WageringMetrics');

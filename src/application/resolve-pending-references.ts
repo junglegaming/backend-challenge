@@ -2,11 +2,12 @@ import { Inject, Injectable } from '@nestjs/common';
 import { FailureCode } from '../domain/failure-code';
 import { UNIT_OF_WORK, type UnitOfWork } from '../domain/ports/repositories';
 import { CLOCK, type Clock } from '../domain/ports/system';
-import { WagerTransactionStatus } from '../domain/wager-transaction';
+import { type WagerTransaction, WagerTransactionStatus } from '../domain/wager-transaction';
 import { ApplicationError } from './errors';
 import { LogContext } from './log-context';
 import { STRUCTURED_LOGGER, type StructuredLogger, WAGERING_METRICS, type WageringMetrics } from './ports';
 import { WagerProcessor } from './wager-processor';
+import { WALLET_ADMISSION, type WalletAdmission } from './wallet-admission';
 
 export interface ResolveBatchResult {
   claimed: number;
@@ -36,6 +37,7 @@ export class ResolvePendingReferences {
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(WAGERING_METRICS) private readonly metrics: WageringMetrics,
     @Inject(STRUCTURED_LOGGER) private readonly logger: StructuredLogger,
+    @Inject(WALLET_ADMISSION) private readonly admission: WalletAdmission,
     private readonly processor: WagerProcessor,
   ) {}
 
@@ -55,16 +57,7 @@ export class ResolvePendingReferences {
     return LogContext.run({ transactionId, walletId }, async () => {
       const started = performance.now();
       try {
-        const outcome = await this.uow.run(
-          async (scope) => {
-            const wallet = await scope.wallets.findByIdForUpdate(walletId);
-            const tx = await scope.transactions.findById(transactionId);
-            if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return undefined;
-            await this.processor.process(scope, wallet, tx, { correlationId: transactionId, causationId: transactionId });
-            return tx;
-          },
-          { name: 'resolve-pending-reference' },
-        );
+        const outcome = await this.admission.run(walletId, () => this.settle(transactionId, walletId));
         this.metrics.processingDuration('worker', (performance.now() - started) / 1000);
         if (!outcome) return 'skipped';
         if (outcome.status === WagerTransactionStatus.PendingReference) {
@@ -78,6 +71,20 @@ export class ResolvePendingReferences {
         return this.handleFailure(transactionId, walletId, error);
       }
     });
+  }
+
+  /** One item, in its own transaction, under the same wallet row lock as the online path. */
+  private settle(transactionId: string, walletId: string): Promise<WagerTransaction | undefined> {
+    return this.uow.run(
+      async (scope) => {
+        const wallet = await scope.wallets.findByIdForUpdate(walletId);
+        const tx = await scope.transactions.findById(transactionId);
+        if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return undefined;
+        await this.processor.process(scope, wallet, tx, { correlationId: transactionId, causationId: transactionId });
+        return tx;
+      },
+      { name: 'resolve-pending-reference' },
+    );
   }
 
   /**

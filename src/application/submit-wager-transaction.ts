@@ -11,6 +11,7 @@ import { LogContext } from './log-context';
 import { type Source, STRUCTURED_LOGGER, type StructuredLogger, WAGERING_METRICS, type WageringMetrics } from './ports';
 import { sha256Canonical } from './payload-hash';
 import { WagerProcessor } from './wager-processor';
+import { WALLET_ADMISSION, type WalletAdmission } from './wallet-admission';
 
 export interface SubmitWagerCommand {
   idempotencyKey: string;
@@ -81,6 +82,7 @@ export class SubmitWagerTransaction {
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
     @Inject(WAGERING_METRICS) private readonly metrics: WageringMetrics,
     @Inject(STRUCTURED_LOGGER) private readonly logger: StructuredLogger,
+    @Inject(WALLET_ADMISSION) private readonly admission: WalletAdmission,
     private readonly processor: WagerProcessor,
   ) {}
 
@@ -89,14 +91,16 @@ export class SubmitWagerTransaction {
     LogContext.assign({ providerId: cmd.providerId, walletId: cmd.walletId });
     const money = this.parseMoney(cmd.money);
     const payloadHash = wagerPayloadHash(cmd, money);
+    // Wait our turn for this wallet in memory, without holding a DB connection.
+    const result = await this.admission.run(cmd.walletId, () => this.executeWithRaceRetry(cmd, money, payloadHash, ctx));
+    this.record(result, cmd, ctx, started);
+    return result;
+  }
 
+  private async executeWithRaceRetry(cmd: SubmitWagerCommand, money: Money, payloadHash: string, ctx: SubmitContext): Promise<SubmitResult> {
     for (let attempt = 1; ; attempt++) {
       try {
-        const result = await this.uow.run((scope) => this.attempt(scope, cmd, money, payloadHash, ctx), {
-          name: 'submit-wager',
-        });
-        this.record(result, cmd, ctx, started);
-        return result;
+        return await this.uow.run((scope) => this.attempt(scope, cmd, money, payloadHash, ctx), { name: 'submit-wager' });
       } catch (error) {
         // Two writers raced on a unique key (e.g. same idempotency key on different
         // wallets). Re-running sees the committed winner and becomes a replay/conflict.

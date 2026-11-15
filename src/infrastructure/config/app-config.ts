@@ -17,6 +17,11 @@ const schema = z.object({
   DB_LOCK_TIMEOUT_MS: int(5_000),
   DB_STATEMENT_TIMEOUT_MS: int(15_000),
 
+  /** per-wallet bulkhead (per instance): see application/wallet-admission.ts */
+  WALLET_MAX_IN_FLIGHT: int(1),
+  WALLET_MAX_QUEUE: int(200),
+  WALLET_MAX_WAIT_MS: int(5_000),
+
   AWS_REGION: z.string().default('us-east-1'),
   AWS_ENDPOINT_URL: z.string().optional(),
   AWS_ACCESS_KEY_ID: z.string().default('test'),

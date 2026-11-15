@@ -47,6 +47,13 @@ export class PrometheusMetrics implements WageringMetrics {
     registers: [this.registry],
   });
 
+  private readonly admission = new Counter({
+    name: 'wagering_wallet_admission_total',
+    help: 'Per-wallet admission decisions (immediate, queued behind the same wallet, rejected as busy)',
+    labelNames: ['outcome'] as const,
+    registers: [this.registry],
+  });
+
   readonly dlqMessages = new Counter({
     name: 'wagering_dlq_messages_total',
     help: 'Messages moved to the DLQ by this instance',
@@ -108,5 +115,8 @@ export class PrometheusMetrics implements WageringMetrics {
   }
   reconciliationMismatch(): void {
     this.reconciliation.inc();
+  }
+  walletAdmission(outcome: 'immediate' | 'queued' | 'rejected'): void {
+    this.admission.inc({ outcome });
   }
 }

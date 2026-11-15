@@ -58,7 +58,8 @@ export type TransientReason =
   | 'unique-race'
   | 'connection'
   | 'timeout'
-  | 'broker';
+  | 'broker'
+  | 'hot-wallet';
 
 export class TransientInfrastructureError extends ApplicationError {
   readonly category = 'transient';
