@@ -40,7 +40,7 @@ export class ResolvePendingReferences {
   ) {}
 
   async runBatch(limit: number): Promise<ResolveBatchResult> {
-    const claimed = await this.uow.run((s) => s.transactions.claimDuePendingReferences(this.clock.now(), CLAIM_LEASE_MS, limit), {
+    const claimed = await this.uow.run((s) => s.transactions.claimDuePendingReferences(CLAIM_LEASE_MS, limit), {
       name: 'claim-pending-references',
     });
     const result: ResolveBatchResult = { claimed: claimed.length, processed: 0, rejected: 0, stillPending: 0, failed: 0, skipped: 0 };

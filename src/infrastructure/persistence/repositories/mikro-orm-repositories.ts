@@ -171,33 +171,33 @@ class MikroWagerTransactionRepository implements WagerTransactionRepository {
     }
   }
 
-  async claimDuePendingReferences(now: Date, leaseMs: number, limit: number): Promise<Array<{ id: string; walletId: string }>> {
+  async claimDuePendingReferences(leaseMs: number, limit: number): Promise<Array<{ id: string; walletId: string }>> {
     const rows = await this.em.execute<Array<{ id: string; wallet_id: string }>>(
       `UPDATE wager_transactions t
-          SET next_reference_check_at = ?::timestamptz + (? * interval '1 millisecond')
+          SET next_reference_check_at = now() + (? * interval '1 millisecond')
         WHERE t.id IN (
               SELECT id FROM wager_transactions
-               WHERE status = 'PENDING_REFERENCE' AND next_reference_check_at <= ?
+               WHERE status = 'PENDING_REFERENCE' AND next_reference_check_at <= now()
                ORDER BY next_reference_check_at
                LIMIT ?
                FOR UPDATE SKIP LOCKED)
        RETURNING t.id, t.wallet_id`,
-      [now, leaseMs, now, limit],
+      [leaseMs, limit],
     );
     return rows.map((r) => ({ id: r.id, walletId: r.wallet_id }));
   }
 
-  async wakeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number> {
-    return this.em.nativeUpdate(
-      WagerTransactionRecord,
-      {
-        status: WagerTransactionStatus.PendingReference,
-        providerId,
-        referenceExternalTransactionId: externalTransactionId,
-        nextReferenceCheckAt: { $gt: now },
-      },
-      { nextReferenceCheckAt: now },
+  async wakeDependents(providerId: string, externalTransactionId: string): Promise<number> {
+    const rows = await this.em.execute<Array<{ id: string }>>(
+      `UPDATE wager_transactions
+          SET next_reference_check_at = now()
+        WHERE status = 'PENDING_REFERENCE'
+          AND provider_id = ? AND reference_external_transaction_id = ?
+          AND next_reference_check_at > now()
+       RETURNING id`,
+      [providerId, externalTransactionId],
     );
+    return rows.length;
   }
 
   private async one(where: Partial<WagerTransactionRecord>): Promise<WagerTransaction | undefined> {

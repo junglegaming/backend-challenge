@@ -68,7 +68,7 @@ export class WagerProcessor {
       await scope.wallets.save(wallet);
     }
     if (tx.isTerminal()) {
-      await scope.transactions.wakeDependents(tx.providerId, tx.externalTransactionId, now);
+      await scope.transactions.wakeDependents(tx.providerId, tx.externalTransactionId);
     }
 
     const events = this.eventsFor(decision, tx, wallet, enteringPending, {

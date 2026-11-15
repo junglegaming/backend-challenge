@@ -45,10 +45,12 @@ export interface WagerTransactionRepository {
   /**
    * Claims due PENDING_REFERENCE transactions for this worker (FOR UPDATE SKIP
    * LOCKED + short lease on next_reference_check_at) and returns their ids.
+   * "Due" is judged by the database clock, like the outbox, so instances with
+   * skewed clocks agree on what is due.
    */
-  claimDuePendingReferences(now: Date, leaseMs: number, limit: number): Promise<Array<{ id: string; walletId: string }>>;
-  /** Makes pending transactions that reference (providerId, externalId) due immediately. */
-  wakeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number>;
+  claimDuePendingReferences(leaseMs: number, limit: number): Promise<Array<{ id: string; walletId: string }>>;
+  /** Makes pending transactions that reference (providerId, externalId) due now (database clock). */
+  wakeDependents(providerId: string, externalTransactionId: string): Promise<number>;
 }
 
 export interface InboxRepository {
