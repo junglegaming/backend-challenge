@@ -74,11 +74,14 @@ Os testes de integração e concorrência precisam do PostgreSQL e do LocalStack
 ```
 test/
   unit/           Money, Wallet, WalletLedgerEntry, regras de BET/WIN/LOSS/REFUND/ROLLBACK,
-                  máquina de estados, conflito de moeda, hash canônico / payload divergente, outbox
+                  máquina de estados, conflito de moeda, hash canônico / payload divergente, outbox,
+                  bulkhead por wallet
   integration/    schema e constraints (direto no SQL), migrations reversíveis, API HTTP,
                   atomicidade wallet+ledger+inbox+outbox, inbox/redelivery, retry/DLQ,
-                  publishers concorrentes, takeover após crash, referências pendentes
+                  publishers concorrentes, takeover após crash, referências pendentes,
+                  agendamento pelo relógio do banco
   concurrency/    mesma aposta 50x em paralelo, cenário da seção 8, hot wallet, wallets distintas,
+                  isolamento da hot wallet (bulkhead, com caso de controle), consumidor em pipeline,
                   3 processos simultâneos, worker morto após commit e antes do ack,
                   SIGKILL sob carga + restart, SIGTERM com drain
 ```
@@ -86,7 +89,7 @@ test/
 Todo arquivo de integração/concorrência termina verificando o invariante global
 `wallet.balance == saldo reconstruído pelo ledger` (mais encadeamento do ledger e ausência de saldo negativo).
 
-Resultado da última execução: **142 testes, 0 falhas, ~41 s**.
+Resultado da última execução: **153 testes, 0 falhas, ~45 s**.
 
 ## API
 
@@ -159,6 +162,8 @@ Todas as variáveis estão em [`src/infrastructure/config/app-config.ts`](src/in
 | `DATABASE_URL` | `postgres://wagering:wagering@localhost:5432/wagering` | |
 | `AWS_ENDPOINT_URL` | — | `http://localhost:4566` para LocalStack |
 | `DB_LOCK_TIMEOUT_MS` | `5000` | espera máxima pelo lock da wallet → `503` / retry |
+| `WALLET_MAX_IN_FLIGHT` / `WALLET_MAX_QUEUE` / `WALLET_MAX_WAIT_MS` | `1` / `200` / `5000` | bulkhead por wallet: quantas usam conexão, quantas esperam em memória e por quanto tempo |
+| `CONSUMER_CONCURRENCY` | `10` | mensagens SQS em voo por instância |
 | `CONSUMER_MAX_ATTEMPTS` | `5` | recebimentos antes da DLQ |
 | `PENDING_REFERENCE_MAX_ATTEMPTS` | `10` | tentativas antes de `REFERENCE_NOT_FOUND` |
 | `CONSUMER_ENABLED` / `OUTBOX_ENABLED` / `PENDING_REFERENCE_ENABLED` | `true` | liga/desliga cada papel por instância |

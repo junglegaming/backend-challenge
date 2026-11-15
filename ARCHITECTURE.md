@@ -38,6 +38,7 @@ src/
     ports/                       repositórios, UnitOfWork, Clock, IdGenerator
   application/       casos de uso (orquestram transação + domínio + portas)
     submit-wager-transaction.ts  ÚNICO ponto de entrada para HTTP e SQS
+    wallet-admission.ts          bulkhead por wallet (fila em memória sem segurar conexão)
     wager-processor.ts           aplica a decisão e grava tudo no mesmo escopo transacional
     open-wallet.ts, queries.ts, reconcile-wallet.ts, resolve-pending-references.ts
   infrastructure/    adapters de saída
@@ -59,6 +60,7 @@ src/
 | Domain Service | `WagerSettlement` | regras de BET/WIN/LOSS/REFUND/ROLLBACK sem I/O → testes unitários exaustivos |
 | Unit of Work + Repository (ports) | `UnitOfWork.run(scope => …)` | o caso de uso recebe repositórios já ligados à mesma transação SQL; nada de transação implícita |
 | Data Mapper | `infrastructure/persistence/mappers.ts` | domínio não conhece ORM; o mapper é o único lugar que conhece os dois lados |
+| Bulkhead (semáforo por chave) | `WalletAdmission` | uma wallet quente não esgota o pool de conexões nem atrasa as demais |
 | Template Method | `PollingWorker` | outbox publisher, worker de pendências e sampler de métricas compartilham loop, drain e shutdown |
 | Strategy / porta | `Authenticator`, `WageringMetrics`, `StructuredLogger` | trocar implementação sem tocar casos de uso |
 | Transactional Outbox / Inbox | `outbox_messages`, `inbox_messages` | atomicidade entre mudança financeira e mensageria |
@@ -110,6 +112,7 @@ COMMIT                                                 -- triggers DEFERRED vali
 - **Deadlocks são evitados por ordem de lock**: todo caminho que escreve trava primeiro a wallet e só então linhas de transação; o claim do worker de pendências não trava wallet. Ainda assim `40P01` é tratado como transitório.
 - O `UPDATE … WHERE version = ?` nunca deveria falhar enquanto o lock está seguro; se falhar (bug, escrita fora da aplicação), vira `ConcurrencyConflictError` e é contado — não há *lost update* possível.
 - Triggers no banco tornam a não-negatividade e a coerência saldo/ledger independentes do código (seção 5).
+- **Bulkhead por wallet (por instância)** — `application/wallet-admission.ts`. Sem ele, N requisições para a mesma wallet "quente" pegariam cada uma uma conexão do pool e ficariam paradas no lock da linha: uma única wallet esgotaria o pool e atrasaria **todas as outras wallets** da instância. Agora, no máximo `WALLET_MAX_IN_FLIGHT` (1) unidade de trabalho por wallet usa conexão; as demais esperam **em memória, sem conexão**, em fila FIFO limitada (`WALLET_MAX_QUEUE`, 200) e com espera máxima (`WALLET_MAX_WAIT_MS`, 5 s); o excesso é recusado na hora como erro transitório (`503` / retry SQS). É só agendamento — a correção continua vindo do lock da linha e das constraints; nada de idempotência ou saldo fica em memória. O teste `hot-wallet-isolation` prova o efeito com um pool de 4 conexões e a linha quente travada: com o bulkhead, outra wallet responde em < 1 s; no caso de controle (bulkhead desligado) ela fica bloqueada até o lock ser liberado. Métrica: `wagering_wallet_admission_total{outcome}`.
 - Corridas entre wallets diferentes com a mesma idempotency key são resolvidas pela constraint `UNIQUE`: o perdedor recebe `23505`, o caso de uso re-executa (até 3x) e na segunda passada enxerga o vencedor → replay ou conflito.
 
 **Cenário obrigatório (100.00, duas apostas de 80.00 simultâneas)**: coberto em uma instância e em 3 processos — exatamente uma `PROCESSED`, outra `REJECTED/INSUFFICIENT_FUNDS`, saldo `20.00`, um único `DEBIT`, retries em paralelo não duplicam.
@@ -209,15 +212,17 @@ Erros que **não** viram transação persistida usam `error.code`: `INVALID_PAYL
 
 - Referência ausente → transação persistida como `PENDING_REFERENCE` com `next_reference_check_at`, evento `WagerTransactionPendingReference`, HTTP `202`.
 - **Worker agendado** (`PendingReferenceWorker`, em toda instância): `UPDATE … WHERE id IN (SELECT … WHERE status='PENDING_REFERENCE' AND next_reference_check_at <= now() ORDER BY … LIMIT n FOR UPDATE SKIP LOCKED) RETURNING id` — o claim empurra `next_reference_check_at` +30 s como *lease*, então instâncias não disputam o mesmo item. Cada item é processado na sua própria transação, sob o lock da wallet, pelo **mesmo** `WagerProcessor` do caminho online.
+- **Relógio único: o do banco.** O claim ("está vencido?"), o lease e o wake-up usam `now()` do PostgreSQL — como a outbox —, então instâncias com relógios divergentes concordam sobre o que está vencido (teste `scheduling-clock`). O horário do próximo retry é calculado a partir do relógio da aplicação; um desvio entre relógios só desloca esse backoff pelo tamanho do desvio, nunca causa processamento duplicado.
 - **Backoff exponencial com jitter** ("equal jitter": 50–100% do valor exponencial), base 2 s, teto 5 min.
 - **Limite: 10 reprocessamentos** (`PENDING_REFERENCE_MAX_ATTEMPTS`). Janela nominal ≈ 2+4+8+…+256+300+300 s ≈ 18,5 min (9–18,5 min com jitter). Justificativa: provedores reenviam a operação original em segundos/minutos; passar de ~15 min esperando uma `BET` significa que ela não existe do lado de cá e segurar a reversão só atrasa a decisão. Esgotado → `REJECTED/REFERENCE_NOT_FOUND` + `WagerTransactionRejected`.
-- **Wake-up**: quando qualquer transação termina, as pendentes que a referenciam têm `next_reference_check_at` antecipado para agora, na mesma transação — a reversão é aplicada no próximo ciclo do worker (~1 s) em vez de esperar o backoff.
+- **Wake-up**: quando qualquer transação termina, as pendentes que a referenciam têm `next_reference_check_at` antecipado para `now()`, na mesma transação — a reversão é aplicada no próximo ciclo do worker (~1 s) em vez de esperar o backoff.
 
 ## 9. Consumidor SQS
 
 Fila `wager-transactions.fifo`, DLQ `wager-transactions-dlq.fifo`, eventos em `wagering-events.fifo`.
 
-- Long polling; mensagens do mesmo `MessageGroupId` em sequência, grupos diferentes em paralelo.
+- Long polling **em pipeline**: os pollers continuam recebendo enquanto mensagens anteriores ainda estão em processamento, até `CONSUMER_CONCURRENCY` mensagens em voo (slots reservados antes de cada `ReceiveMessage`). Uma mensagem lenta — por exemplo, presa no lock de uma wallet quente — não segura o próximo recebimento (teste `consumer-pipelining`, que falha contra a versão anterior por lote).
+- Mensagens do mesmo `MessageGroupId` (= wallet) em sequência: dentro do lote pelo consumidor, entre lotes pelo próprio SQS FIFO (que não entrega a próxima mensagem de um grupo enquanto outra dele está em voo). Grupos diferentes em paralelo.
 - **Ack (DeleteMessage) só após o commit.** O inbox está dentro da transação financeira: morrer antes do commit → rollback de tudo, a mensagem volta; morrer depois do commit e antes do ack → a mensagem volta, o inbox detecta e só faz ack (teste `crash-recovery`: processo com `FAULT_INJECTION=crash-after-commit` sai com 137 entre commit e ack).
 
 | Resultado | Classe | Ação |
@@ -258,6 +263,7 @@ Trade-off: a ordem global de publicação por agregado não é garantida entre p
 | `wagering_retries_total{component,reason}` | retries (sqs, outbox, pending-reference, unit-of-work) |
 | `wagering_dlq_messages_total{reason}`, `wagering_dlq_depth` | mensagens em DLQ |
 | `wagering_lock_conflicts_total{reason}` | lock timeout, deadlock, serialização, version guard, corrida de unique |
+| `wagering_wallet_admission_total{outcome}` | bulkhead por wallet: `immediate`, `queued` (esperou a vez da wallet), `rejected` (wallet ocupada → 503) |
 | `wagering_outbox_lag_seconds`, `wagering_outbox_pending`, `wagering_outbox_publish_delay_seconds` | outbox lag |
 | `wagering_processing_duration_seconds{source}` | latência de processamento |
 | `wagering_reconciliation_mismatches_total` | divergências saldo × ledger |
@@ -280,14 +286,18 @@ Trade-off: a ordem global de publicação por agregado não é garantida entre p
 
 **Ambiente**: uma única máquina (12 vCPU, 24 GB), tudo em Docker: 3 réplicas da app atrás de nginx, PostgreSQL 16, LocalStack 3.8; o gerador de carga roda na mesma máquina (compete por CPU — os números são conservadores e **não** representam um ambiente de produção).
 
+Resultados com o bulkhead por wallet e o consumidor em pipeline (versão atual):
+
 | Cenário | Throughput | p50 | p95 | p99 | Erros | Lock conflicts | Drain da outbox | Reconciliação |
 |---|---|---|---|---|---|---|---|---|
-| 200 wallets, 10% hot, 32 clientes, 20 s | **606 req/s** | 25.6 ms | 190 ms | 633 ms | 0% | 0 | 3.0 s | 200/200 ok |
-| 50 wallets, **90% hot**, 64 clientes, 15 s | **205 req/s** | 336 ms | 753 ms | 805 ms | 0% | 0 | 0.5 s | 50/50 ok |
+| 200 wallets, 10% hot, 32 clientes, 20 s | **679 req/s** | 22.8 ms | 263 ms | 418 ms | 0% | 0 | 1.0 s | 200/200 ok |
+| 50 wallets, **90% hot**, 64 clientes, 15 s | **183 req/s** | 391 ms | 575 ms | 920 ms | 0% | 0 | 3.0 s | 50/50 ok |
+
+Antes do bulkhead, os mesmos cenários deram 606 req/s (p99 633 ms) e 205 req/s (p99 805 ms). No cenário misto o ganho é real: as requisições das wallets comuns deixaram de esperar atrás da wallet quente (p99 −34%). No cenário 90% quente o throughput fica no mesmo teto — limitado pelo lock da linha, como esperado; a diferença está dentro da variação entre execuções numa máquina compartilhada.
 
 **Análise honesta**
 
-- A hot wallet é o limite: com lock por linha, as escritas em uma wallet são **serializadas**; o teto é ≈ 1 / (tempo de lock segurado) ≈ 200 tx/s nesta máquina (~5 ms por transação: 6–8 round-trips + commit com triggers). As requisições excedentes esperam na fila do lock — por isso o p50 sobe para centenas de ms sem erros. Isso é uma propriedade escolhida (correção > throughput por wallet), não um bug. Se for preciso mais: reduzir round-trips (stored procedure ou CTE única), `synchronous_commit` por sessão para caminhos não financeiros, ou *sub-wallets*/saldo particionado.
+- A hot wallet é o limite: com lock por linha, as escritas em uma wallet são **serializadas**; o teto é ≈ 1 / (tempo de lock segurado) ≈ 200 tx/s nesta máquina (~5 ms por transação: 6–8 round-trips + commit com triggers). As requisições excedentes esperam a vez da wallet — em memória, graças ao bulkhead, sem prender conexões — por isso o p50 sobe para centenas de ms sem erros e sem afetar as outras wallets. Isso é uma propriedade escolhida (correção > throughput por wallet), não um bug. Se for preciso mais: reduzir round-trips (stored procedure ou CTE única), `synchronous_commit` por sessão para caminhos não financeiros, ou *sub-wallets*/saldo particionado.
 - 0 lock conflicts: com `lock_timeout` de 5 s nenhuma espera estourou; abaixando o timeout eles apareceriam como `503` retentáveis (testado em `sqs-consumer.test.ts`).
 - O p99 no cenário distribuído é dominado por espera atrás das requisições "hot" (10%) e pelo gerador co-localizado.
 - O contador de conflitos/replays é lido de uma instância via gateway (as métricas são por instância); em produção agrega-se no Prometheus.
