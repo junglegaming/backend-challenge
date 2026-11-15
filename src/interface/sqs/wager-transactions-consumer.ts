@@ -34,8 +34,12 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  *  - business outcomes (PROCESSED / REJECTED / PENDING_REFERENCE / unknown
  *    wallet) are terminal -> ack; transient errors -> visibility backoff;
  *    permanent errors or exhausted attempts -> DLQ;
- *  - messages of one MessageGroupId (= wallet) are handled sequentially,
- *    different groups in parallel;
+ *  - pipelined: pollers keep receiving while earlier messages are still being
+ *    processed, up to CONSUMER_CONCURRENCY messages in flight, so one slow
+ *    message never holds back the next receive;
+ *  - messages of one MessageGroupId (= wallet) are handled sequentially:
+ *    within a batch by us, across batches by SQS FIFO itself (it does not hand
+ *    out a group's next message while one of it is in flight);
  *  - on shutdown it stops polling, finishes in-flight messages and returns
  *    not-yet-started ones to the queue (visibility 0).
  */
@@ -45,6 +49,9 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, Before
   private readonly abort = new AbortController();
   private pollers: Promise<void>[] = [];
   private readonly inFlight = new Set<Promise<void>>();
+  /** message slots reserved or in use, shared by all pollers */
+  private busySlots = 0;
+  private slotWaiters: Array<() => void> = [];
 
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -74,6 +81,7 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, Before
     if (!this.running) return;
     this.running = false;
     this.abort.abort();
+    this.wakeSlotWaiters();
     const drained = Promise.allSettled([...this.pollers, ...this.inFlight]).then(() => true);
     const timedOut = sleep(this.config.CONSUMER_SHUTDOWN_TIMEOUT_MS).then(() => false);
     const finished = await Promise.race([drained, timedOut]);
@@ -82,29 +90,60 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, Before
 
   private async poll(): Promise<void> {
     while (this.running) {
+      const reserved = await this.reserveSlots(10);
+      if (!this.running) {
+        this.releaseSlots(reserved);
+        break;
+      }
+      let messages: Message[] = [];
       try {
         const { transactions } = await this.sqs.queueUrls();
         const response = await this.sqs.client.send(
           new ReceiveMessageCommand({
             QueueUrl: transactions,
-            MaxNumberOfMessages: Math.min(10, Math.max(1, this.config.CONSUMER_CONCURRENCY)),
+            MaxNumberOfMessages: reserved,
             WaitTimeSeconds: this.config.CONSUMER_WAIT_TIME_SECONDS,
             VisibilityTimeout: this.config.CONSUMER_VISIBILITY_TIMEOUT_SECONDS,
             MessageSystemAttributeNames: ['ApproximateReceiveCount', 'MessageGroupId'],
           }),
           { abortSignal: this.abort.signal },
         );
-        const messages = response.Messages ?? [];
-        if (messages.length === 0) continue;
-        const work = this.dispatch(messages);
-        this.inFlight.add(work);
-        await work.finally(() => this.inFlight.delete(work));
+        messages = response.Messages ?? [];
       } catch (error) {
+        this.releaseSlots(reserved);
         if (!this.running) break;
         this.logger.warn('sqs receive failed', { error: error instanceof Error ? error.message : String(error) });
         await sleep(1_000);
+        continue;
       }
+      this.releaseSlots(reserved - messages.length);
+      if (messages.length === 0) continue;
+      // not awaited: the next receive starts while this batch is processed
+      const work = this.dispatch(messages).finally(() => this.inFlight.delete(work));
+      this.inFlight.add(work);
     }
+  }
+
+  /** Waits until at least one slot is free, then reserves up to `max`. */
+  private async reserveSlots(max: number): Promise<number> {
+    while (this.running && this.busySlots >= this.config.CONSUMER_CONCURRENCY) {
+      await new Promise<void>((resolve) => this.slotWaiters.push(resolve));
+    }
+    const reserved = Math.max(1, Math.min(max, this.config.CONSUMER_CONCURRENCY - this.busySlots));
+    this.busySlots += reserved;
+    return reserved;
+  }
+
+  private releaseSlots(count: number): void {
+    if (count <= 0) return;
+    this.busySlots -= count;
+    this.wakeSlotWaiters();
+  }
+
+  private wakeSlotWaiters(): void {
+    const waiters = this.slotWaiters;
+    this.slotWaiters = [];
+    for (const wake of waiters) wake();
   }
 
   /** Same group sequentially (FIFO per wallet), groups in parallel. */
@@ -117,10 +156,14 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, Before
     await Promise.all(
       [...groups.values()].map(async (group) => {
         for (const message of group) {
-          if (this.running) {
-            await this.handle(message);
-          } else {
-            await this.release(message);
+          try {
+            if (this.running) {
+              await this.handle(message);
+            } else {
+              await this.release(message);
+            }
+          } finally {
+            this.releaseSlots(1);
           }
         }
       }),
