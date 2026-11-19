@@ -205,9 +205,10 @@ describe('transactional outbox', () => {
     constructor(private readonly inner: EventPublisher) {
       super();
     }
-    async publish(message: OutboxMessage): Promise<void> {
-      await this.inner.publish(message);
-      this.sent.push(message.id);
+    async publish(messages: OutboxMessage[]): Promise<Set<string>> {
+      const failed = await this.inner.publish(messages);
+      this.sent.push(...messages.filter((m) => !failed.has(m.id)).map((m) => m.id));
+      return failed;
     }
   }
   const pending = async () => (await h.sql(`select id from outbox_messages where published_at is null`)).map((r) => r.id as string);
@@ -242,7 +243,7 @@ describe('transactional outbox', () => {
     const wallet = await h.wallet('100.00'); // 2 eventos: WalletBalanceChanged, WagerTransactionProcessed
 
     const sqsDown = new (class extends EventPublisher {
-      async publish(): Promise<void> {
+      async publish(): Promise<Set<string>> {
         throw new Error('SQS unavailable (simulated)');
       }
     })();
@@ -270,8 +271,8 @@ describe('transactional outbox', () => {
     const [row] = await h.sql(`select id, aggregate_id, event_type, payload, occurred_at from outbox_messages where aggregate_id = ?`, [wallet.id]);
     const message = OutboxMessage.rehydrate({ id: row!.id, aggregateId: row!.aggregate_id, eventType: row!.event_type, payload: row!.payload, occurredAt: row!.occurred_at, attempts: 0 });
     const publisher = new SqsEventPublisher(sqs, queues.events);
-    await publisher.publish(message);
-    await publisher.publish(message); // "publicou, morreu antes do commit, outra instância publicou de novo"
+    await publisher.publish([message]);
+    await publisher.publish([message]); // "publicou, morreu antes do commit, outra instância publicou de novo"
     const delivered = (await drain(sqs, queues.events)).filter((d) => d.body.aggregateId === wallet.id);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]!.body.eventId).toBe(row!.id);

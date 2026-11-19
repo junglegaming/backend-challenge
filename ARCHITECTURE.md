@@ -214,6 +214,8 @@ registrada **e** aplicada, ou nenhuma das duas coisas.
 Os eventos são gravados em `outbox_messages` na mesma transação do efeito financeiro; nada é
 publicado antes do commit. O worker faz, em uma transação:
 `SELECT ... FOR UPDATE SKIP LOCKED` → publica → marca `published_at` → commit.
+A publicação usa `SendMessageBatch` (até 10 eventos por chamada, no máximo um por wallet em cada
+chamada) — mudança motivada pelo teste de carga.
 
 - **Vários publishers:** `SKIP LOCKED` faz cada um pegar um lote diferente.
 - **Processo morre antes de publicar:** os eventos continuam pendentes e outra instância publica.
@@ -351,7 +353,9 @@ continuam sendo canal interno confiável, com as mesmas validações de domínio
 - **Eventos do worker de pendências** usam o id da transação como `correlationId`; o original não é
   armazenado.
 - **Métricas são por instância**; a agregação fica para o Prometheus.
-- **Sem teste de carga** e sem OpenTelemetry. Não há número de throughput medido para apresentar.
+- **A outbox atrasa sob carga máxima.** No teste de carga, a ~1.500 req/s o lag ainda cresce
+  (ver [LOAD_TEST.md](LOAD_TEST.md)). Afeta a notificação, não o saldo.
+- **Sem OpenTelemetry.**
 - **Sem teste automatizado do `503` no HTTP** nem de indisponibilidade real do Postgres (derrubar o
   container); a indisponibilidade é simulada na fronteira do `UnitOfWork`.
 - **As filas são criadas pela aplicação** na inicialização; em produção seria infraestrutura como
@@ -361,6 +365,6 @@ continuam sendo canal interno confiável, com as mesmas validações de domínio
 
 ## 9. Com mais tempo
 
-Teste de carga com análise de p50/p95/p99 e de contenção em hot wallet; chaos com `docker kill` do
+Publicação da outbox em paralelo e teste de carga de taxa fixa e longa duração; chaos com `docker kill` do
 Postgres e do LocalStack; autenticação com Keycloak; resolução imediata de pendências quando a
 referência chega; particionamento da outbox para ordem estrita por wallet.

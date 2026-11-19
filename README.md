@@ -6,6 +6,7 @@ ordem e processadas ao mesmo tempo por várias instâncias.
 
 - Enunciado do desafio: [CHALLENGE.md](CHALLENGE.md)
 - Decisões, trade-offs, matriz de falhas e limitações: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Teste de carga, com metodologia e análise: [LOAD_TEST.md](LOAD_TEST.md)
 
 **Stack:** Bun · TypeScript estrito · NestJS · MikroORM · PostgreSQL · SQS (LocalStack) · Docker Compose
 
@@ -89,6 +90,8 @@ bun run test:unit         # domínio: Money, Wallet, regras, transições
 bun run test:integration  # schema/constraints, casos de uso, inbox, outbox, retry, DLQ
 bun run test:concurrency  # corridas, 3 processos reais, crash, restart, teste de propriedade
 bun run typecheck
+
+bun run test:load         # teste de carga; precisa do stack completo no ar (docker compose up --build)
 ```
 
 | Arquivo | O que prova |
@@ -129,5 +132,5 @@ test/
 ## Não implementado
 
 Autenticação (há um guard no-op e o desenho em
-[ARCHITECTURE.md](ARCHITECTURE.md#6-autenticação)), teste de carga, double-entry e OpenTelemetry.
+[ARCHITECTURE.md](ARCHITECTURE.md#6-autenticação)), double-entry e OpenTelemetry.
 A lista completa de limitações está em [ARCHITECTURE.md](ARCHITECTURE.md#8-limitações-conhecidas).

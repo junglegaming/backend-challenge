@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { OutboxMessage } from '../domain/messaging';
 import { logger } from '../observability/logger';
 import { metrics } from '../observability/metrics';
 import { EventPublisher, UnitOfWork } from './ports';
@@ -24,21 +25,54 @@ export class PublishOutbox {
       const batch = await store.claimDueOutbox(config.outbox.batchSize, now);
       // Falhou um evento de uma wallet: os seguintes dela esperam, para não inverter a ordem.
       const blockedAggregates = new Set<string>();
-      for (const message of batch) {
-        if (blockedAggregates.has(message.aggregateId)) continue;
+      for (const chunk of chunksWithDistinctAggregates(batch)) {
+        const sendable = chunk.filter((message) => !blockedAggregates.has(message.aggregateId));
+        if (sendable.length === 0) continue;
+        let failed: Set<string>;
         try {
-          await this.publisher.publish(message);
-          message.markPublished(new Date());
-          metrics.outboxPublished.inc({ event_type: message.eventType });
+          failed = await this.publisher.publish(sendable);
         } catch (error) {
-          blockedAggregates.add(message.aggregateId);
-          message.scheduleRetry(now);
-          metrics.retries.inc({ source: 'outbox' });
-          logger.warn({ eventId: message.id, eventType: message.eventType, attempts: message.attempts, err: error }, 'outbox publish failed');
+          failed = new Set(sendable.map((message) => message.id));
+          logger.warn({ events: sendable.length, err: error }, 'outbox publish failed');
         }
-        store.saveOutbox(message);
+        for (const message of sendable) {
+          if (failed.has(message.id)) {
+            blockedAggregates.add(message.aggregateId);
+            message.scheduleRetry(now);
+            metrics.retries.inc({ source: 'outbox' });
+          } else {
+            message.markPublished(new Date());
+            metrics.outboxPublished.inc({ event_type: message.eventType });
+          }
+          store.saveOutbox(message);
+        }
       }
       return batch.length;
     });
   }
+}
+
+const SQS_BATCH_LIMIT = 10;
+
+/**
+ * Divide o lote em envios de até 10 mensagens, com no máximo UMA por wallet em cada envio. Assim
+ * dois eventos da mesma wallet nunca vão na mesma chamada: o segundo só é enviado depois de sabermos
+ * o resultado do primeiro, e a ordem por wallet se mantém mesmo com falha parcial do lote.
+ */
+export function chunksWithDistinctAggregates(batch: OutboxMessage[]): OutboxMessage[][] {
+  const chunks: OutboxMessage[][] = [];
+  let remaining = batch;
+  while (remaining.length > 0) {
+    const chunk: OutboxMessage[] = [];
+    const deferred: OutboxMessage[] = [];
+    const seen = new Set<string>();
+    for (const message of remaining) {
+      if (chunk.length < SQS_BATCH_LIMIT && !seen.has(message.aggregateId)) chunk.push(message);
+      else deferred.push(message);
+      seen.add(message.aggregateId);
+    }
+    chunks.push(chunk);
+    remaining = deferred;
+  }
+  return chunks;
 }

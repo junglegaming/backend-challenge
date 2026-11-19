@@ -11,7 +11,8 @@
     "test": "bun test",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",
-    "test:concurrency": "bun test test/concurrency"
+    "test:concurrency": "bun test test/concurrency",
+    "test:load": "bun test/load/run.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1172.0",

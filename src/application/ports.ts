@@ -37,5 +37,6 @@ export abstract class UnitOfWork {
 
 /** Destino dos eventos de integração (SQS). Fronteira real de infraestrutura. */
 export abstract class EventPublisher {
-  abstract publish(message: OutboxMessage): Promise<void>;
+  /** Publica até 10 mensagens em uma chamada. Devolve os ids que o broker recusou. */
+  abstract publish(messages: OutboxMessage[]): Promise<Set<string>>;
 }
