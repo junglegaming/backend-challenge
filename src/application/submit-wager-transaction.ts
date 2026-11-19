@@ -8,12 +8,13 @@ import { WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '
 import { Wallet } from '../domain/wallet';
 import { logger } from '../observability/logger';
 import { metrics } from '../observability/metrics';
-import { IdempotencyConflictError, UniqueViolationError, WalletNotFoundError } from './errors';
+import { IdempotencyConflictError, MessageIdConflictError, UniqueViolationError, WalletNotFoundError } from './errors';
 import { payloadHash } from './payload-hash';
 import { UnitOfWork } from './ports';
 import { settle } from './settle';
 
-const text = z.string().min(1).max(200);
+// Sem caracteres de controle: o Postgres recusa \u0000 em `text`, o que viraria um falso erro transitório.
+const text = z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, 'control characters are not allowed');
 
 /** Contrato de entrada, compartilhado por HTTP e SQS. OPENING é interno e não é aceito. */
 const submissionSchema = z.strictObject({
@@ -78,15 +79,19 @@ export class SubmitWagerTransaction {
     }
   }
 
-  private attempt(command: SubmitCommand, submission: Submission, money: Money, hash: string): Promise<SubmitOutcome> {
-    return this.uow.run(async (store) => {
+  private async attempt(command: SubmitCommand, submission: Submission, money: Money, hash: string): Promise<SubmitOutcome> {
+    // Métricas e logs são emitidos só depois do commit: uma transação desfeita não conta.
+    const afterCommit: (() => void)[] = [];
+    const outcome = await this.uow.run<SubmitOutcome>(async (store) => {
       const now = new Date();
 
       let inbox: InboxMessage | undefined;
       if (command.inbox) {
         inbox = InboxMessage.receive({ ...command.inbox, consumerName: config.consumerName, receivedAt: now });
-        if (!(await store.insertInbox(inbox))) {
-          metrics.duplicates.inc({ type: 'inbox_redelivery' });
+        const received = await store.insertInbox(inbox);
+        if (received === 'conflict') throw new MessageIdConflictError(`messageId ${inbox.messageId} was already used with different content`);
+        if (received === 'duplicate') {
+          afterCommit.push(() => metrics.duplicates.inc({ type: 'inbox_redelivery' }));
           return { duplicateMessage: true };
         }
       }
@@ -106,11 +111,13 @@ export class SubmitWagerTransaction {
           metrics.duplicates.inc({ type: 'payload_conflict' });
           throw new IdempotencyConflictError('idempotency key or external transaction id already used with a different payload');
         }
-        metrics.duplicates.inc({ type: 'idempotent_replay' });
-        logger.info(
-          { correlationId: command.correlationId, messageId: command.inbox?.messageId, transactionId: existing.id, walletId: existing.walletId, providerId: existing.providerId },
-          'idempotent replay',
-        );
+        afterCommit.push(() => {
+          metrics.duplicates.inc({ type: 'idempotent_replay' });
+          logger.info(
+            { correlationId: command.correlationId, messageId: command.inbox?.messageId, transactionId: existing.id, walletId: existing.walletId, providerId: existing.providerId },
+            'idempotent replay',
+          );
+        });
         inbox?.markProcessed(now);
         if (inbox) await store.markInboxProcessed(inbox);
         return toResult(existing, wallet, true);
@@ -131,7 +138,7 @@ export class SubmitWagerTransaction {
         referenceExternalTransactionId: submission.referenceExternalTransactionId,
         createdAt: now,
       });
-      await settle(
+      const report = await settle(
         tx,
         wallet,
         store,
@@ -139,11 +146,14 @@ export class SubmitWagerTransaction {
         { correlationId: command.correlationId, causationId: command.inbox?.messageId, messageId: command.inbox?.messageId },
         config.pendingReference.maxAttempts,
       );
+      afterCommit.push(report);
 
       inbox?.markProcessed(now);
       if (inbox) await store.markInboxProcessed(inbox);
       return toResult(tx, wallet, false);
     });
+    afterCommit.forEach((emit) => emit());
+    return outcome;
   }
 }
 

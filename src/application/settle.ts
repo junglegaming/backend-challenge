@@ -17,6 +17,8 @@ import { TxStore } from './ports';
  * Resolve uma transação não-terminal contra a wallet JÁ TRAVADA nesta transação SQL e grava tudo
  * que decorre disso: transação, saldo, lançamento e eventos. Usado pela submissão (HTTP e SQS) e
  * pelo worker de referências pendentes — um único lugar decide o destino de uma transação.
+ *
+ * Devolve uma função a ser chamada DEPOIS do commit: métrica e log só valem para o que foi confirmado.
  */
 export async function settle(
   tx: WagerTransaction,
@@ -25,7 +27,7 @@ export async function settle(
   now: Date,
   ctx: EventContext & { messageId?: string },
   maxReferenceAttempts: number,
-): Promise<void> {
+): Promise<() => void> {
   const wasPendingReference = tx.status === WagerTransactionStatus.PendingReference;
   const entry = await decide(tx, wallet, store, now, maxReferenceAttempts);
 
@@ -43,23 +45,25 @@ export async function settle(
     store.enqueue(WagerTransactionPendingReference.from(tx, now, ctx));
   }
 
-  if (tx.isTerminal()) {
-    metrics.transactions.inc({ kind: tx.kind, status: tx.status, failure_code: tx.failureCode ?? '' });
-  }
-  logger.info(
-    {
-      correlationId: ctx.correlationId,
-      messageId: ctx.messageId,
-      transactionId: tx.id,
-      walletId: tx.walletId,
-      providerId: tx.providerId,
-      kind: tx.kind,
-      status: tx.status,
-      failureCode: tx.failureCode,
-      attempts: tx.attempts,
-    },
-    'wager transaction settled',
-  );
+  return () => {
+    if (tx.isTerminal()) {
+      metrics.transactions.inc({ kind: tx.kind, status: tx.status, failure_code: tx.failureCode ?? '' });
+    }
+    logger.info(
+      {
+        correlationId: ctx.correlationId,
+        messageId: ctx.messageId,
+        transactionId: tx.id,
+        walletId: tx.walletId,
+        providerId: tx.providerId,
+        kind: tx.kind,
+        status: tx.status,
+        failureCode: tx.failureCode,
+        attempts: tx.attempts,
+      },
+      'wager transaction settled',
+    );
+  };
 }
 
 /** Aplica as regras da seção 7. Devolve o lançamento de ledger quando o saldo muda. */

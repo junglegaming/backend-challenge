@@ -7,7 +7,7 @@ import {
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { z } from 'zod';
-import { IdempotencyConflictError, WalletNotFoundError } from '../../application/errors';
+import { IdempotencyConflictError, MessageIdConflictError, WalletNotFoundError } from '../../application/errors';
 import { sha256 } from '../../application/payload-hash';
 import { SubmitWagerTransaction } from '../../application/submit-wager-transaction';
 import { config } from '../../config';
@@ -74,9 +74,12 @@ export class WagerTransactionsConsumer {
         const groups = Map.groupBy(Messages, (m) => m.Attributes?.MessageGroupId ?? m.MessageId!);
         await Promise.all(
           [...groups.values()].map(async (group) => {
+            // Falha transitória interrompe o grupo: as mensagens seguintes da wallet são devolvidas,
+            // para não serem processadas na frente da que vai ser reentregue.
+            let blocked = false;
             for (const message of group) {
-              if (this.stopping) await this.release(message);
-              else await this.handle(message);
+              if (this.stopping || blocked) await this.release(message);
+              else blocked = (await this.handle(message)) === 'retry';
             }
           }),
         );
@@ -88,7 +91,7 @@ export class WagerTransactionsConsumer {
     }
   }
 
-  private async handle(message: Message): Promise<void> {
+  private async handle(message: Message): Promise<'done' | 'retry'> {
     const body = message.Body ?? '';
     let envelope: z.infer<typeof envelopeSchema>;
     try {
@@ -108,9 +111,11 @@ export class WagerTransactionsConsumer {
       });
       if (config.faultInjection === 'crash_before_ack') process.kill(process.pid, 'SIGKILL');
       await this.ack(message);
+      return 'done';
     } catch (error) {
       if (error instanceof ValidationError) return this.deadLetter(message, 'invalid_payload', log);
       if (error instanceof IdempotencyConflictError) return this.deadLetter(message, 'idempotency_conflict', log);
+      if (error instanceof MessageIdConflictError) return this.deadLetter(message, 'message_id_conflict', log);
       if (error instanceof WalletNotFoundError) return this.deadLetter(message, 'wallet_not_found', log);
 
       // Transitório: a mensagem volta para a fila depois de um backoff crescente.
@@ -119,6 +124,7 @@ export class WagerTransactionsConsumer {
       metrics.retries.inc({ source: 'sqs' });
       log.warn({ err: error, receiveCount, retryInSeconds: delay }, 'transient failure, message will be redelivered');
       await this.changeVisibility(message, delay);
+      return 'retry';
     }
   }
 
@@ -136,7 +142,20 @@ export class WagerTransactionsConsumer {
       .catch((error) => logger.warn({ err: error }, 'could not change message visibility'));
   }
 
-  private async deadLetter(message: Message, reason: string, log = logger): Promise<void> {
+  private async deadLetter(message: Message, reason: string, log = logger): Promise<'done' | 'retry'> {
+    try {
+      await this.sendToDeadLetterQueue(message, reason);
+      metrics.dlq.inc({ reason });
+      log.error({ sqsMessageId: message.MessageId, reason }, 'message moved to DLQ');
+      return 'done';
+    } catch (error) {
+      // DLQ fora do ar: a mensagem fica na fila e volta depois; o redrive do SQS é a rede final.
+      log.error({ err: error, sqsMessageId: message.MessageId, reason }, 'could not move message to DLQ, leaving it for redelivery');
+      return 'retry';
+    }
+  }
+
+  private async sendToDeadLetterQueue(message: Message, reason: string): Promise<void> {
     await this.sqs.send(
       new SendMessageCommand({
         QueueUrl: this.queues.dlq,
@@ -147,7 +166,5 @@ export class WagerTransactionsConsumer {
       }),
     );
     await this.ack(message);
-    metrics.dlq.inc({ reason });
-    log.error({ sqsMessageId: message.MessageId, reason }, 'message moved to DLQ');
   }
 }

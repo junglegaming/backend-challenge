@@ -4,7 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { UniqueViolationError } from '../../application/errors';
 import { TxStore, UnitOfWork } from '../../application/ports';
 import { config } from '../../config';
-import { FailureCode } from '../../domain/errors';
+import { FailureCode, ValidationError } from '../../domain/errors';
 import { IntegrationEvent } from '../../domain/events';
 import { WalletLedgerEntry } from '../../domain/ledger-entry';
 import { InboxMessage, OutboxMessage } from '../../domain/messaging';
@@ -19,8 +19,8 @@ const money = (amount: string, currency: string): Money => Money.from({ amount, 
 /** SQLSTATE do erro original do driver, preservado pelo MikroORM. */
 export const sqlState = (error: unknown): string | undefined => (error as { code?: string } | null)?.code;
 
-// lock_not_available (lock_timeout), deadlock_detected, serialization_failure
-const LOCK_CONFLICTS = new Set(['55P03', '40P01', '40001']);
+// lock_not_available (lock_timeout), deadlock_detected
+const LOCK_CONFLICTS = new Set(['55P03', '40P01']);
 
 @Injectable()
 export class MikroUnitOfWork extends UnitOfWork {
@@ -40,6 +40,8 @@ export class MikroUnitOfWork extends UnitOfWork {
       const state = sqlState(error);
       if (state && LOCK_CONFLICTS.has(state)) metrics.lockConflicts.inc();
       if (state === '23505') throw new UniqueViolationError((error as { constraint?: string }).constraint ?? 'unknown');
+      // Classe 22 = dado que o banco não aceita (ex.: valor acima de numeric(20,2)). Reenviar não resolve.
+      if (state?.startsWith('22')) throw new ValidationError('value rejected by the database (out of range or invalid encoding)');
       throw error;
     }
   }
@@ -54,13 +56,18 @@ class MikroTxStore implements TxStore {
 
   constructor(private readonly em: EntityManager) {}
 
-  async insertInbox(message: InboxMessage): Promise<boolean> {
-    const rows = await this.em.execute(
+  async insertInbox(message: InboxMessage): Promise<'inserted' | 'duplicate' | 'conflict'> {
+    const inserted = await this.em.execute(
       `insert into inbox_messages (consumer_name, message_id, payload_hash, received_at) values (?, ?, ?, ?)
        on conflict do nothing returning message_id`,
       [message.consumerName, message.messageId, message.payloadHash, message.receivedAt],
     );
-    return rows.length === 1;
+    if (inserted.length === 1) return 'inserted';
+    const [stored] = await this.em.execute(`select payload_hash from inbox_messages where consumer_name = ? and message_id = ?`, [
+      message.consumerName,
+      message.messageId,
+    ]);
+    return stored?.payload_hash === message.payloadHash ? 'duplicate' : 'conflict';
   }
 
   async markInboxProcessed(message: InboxMessage): Promise<void> {
@@ -188,10 +195,15 @@ class MikroTxStore implements TxStore {
   async claimDueOutbox(limit: number, now: Date): Promise<OutboxMessage[]> {
     // `sequence` (identity) dá a ordem de inserção; SKIP LOCKED pula linhas já pegas por outro publisher.
     const claimed: { id: string }[] = await this.em.execute(
-      `select id from outbox_messages
-        where published_at is null and (next_attempt_at is null or next_attempt_at <= ?)
-        order by sequence limit ? for update skip locked`,
-      [now, limit],
+      `select o.id from outbox_messages o
+        where o.published_at is null and (o.next_attempt_at is null or o.next_attempt_at <= ?)
+          -- não ultrapassa um evento anterior da mesma wallet que falhou e está em backoff
+          and not exists (
+            select 1 from outbox_messages earlier
+             where earlier.aggregate_id = o.aggregate_id and earlier.published_at is null
+               and earlier.sequence < o.sequence and earlier.next_attempt_at > ?)
+        order by o.sequence limit ? for update of o skip locked`,
+      [now, now, limit],
     );
     if (claimed.length === 0) return [];
     const order = new Map(claimed.map((row, index) => [row.id, index]));
@@ -225,6 +237,9 @@ class MikroTxStore implements TxStore {
     const record = await this.em.findOne(WagerTransactionRecord, where);
     if (!record) return undefined;
     this.transactions.set(record.id, record);
+    // O saldo observado é da wallet, cuja moeda pode diferir da moeda da operação (CURRENCY_MISMATCH).
+    // Normalmente a wallet já está no Identity Map (foi travada antes), então isto não vai ao banco.
+    const wallet = await this.em.findOne(WalletRecord, record.walletId);
     return WagerTransaction.rehydrate({
       id: record.id,
       providerId: record.providerId,
@@ -243,7 +258,7 @@ class MikroTxStore implements TxStore {
       referenceTransactionId: record.referenceTransactionId ?? undefined,
       failureCode: (record.failureCode as FailureCode | null) ?? undefined,
       processedAt: record.processedAt ?? undefined,
-      resultingBalance: record.resultingBalance ? money(record.resultingBalance, record.currency) : undefined,
+      resultingBalance: record.resultingBalance ? money(record.resultingBalance, wallet?.currency ?? record.currency) : undefined,
       attempts: record.attempts,
       nextAttemptAt: record.nextAttemptAt ?? undefined,
     });

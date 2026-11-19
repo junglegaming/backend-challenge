@@ -135,8 +135,11 @@ describe('business rules', () => {
 
   test('currency different from the wallet is rejected', async () => {
     const wallet = await h.wallet('100.00');
-    const result = await h.send(h.payload(wallet, 'BET', '1.00', { money: { amount: '1.00', currency: 'USD' } }));
-    expect(result).toMatchObject({ status: 'REJECTED', failureCode: 'CURRENCY_MISMATCH' });
+    const bet = h.payload(wallet, 'BET', '1.00', { money: { amount: '1.00', currency: 'USD' } });
+    const result = await h.send(bet);
+    expect(result).toMatchObject({ status: 'REJECTED', failureCode: 'CURRENCY_MISMATCH', balance: { amount: '100.00', currency: 'BRL' } });
+    // o replay devolve o saldo na moeda da wallet, não na moeda (errada) da operação
+    expect(await h.send(bet)).toEqual({ ...result, idempotentReplay: true });
   });
 
   test('a missing reference parks the transaction as PENDING_REFERENCE without touching the balance', async () => {
@@ -190,6 +193,7 @@ describe('input validation', () => {
       h.payload(wallet, 'BET', '0.00'),
       h.payload(wallet, 'BET', '10.00', { money: { amount: 10, currency: 'BRL' } }),
       h.payload(wallet, 'REFUND', '10.00'),
+      h.payload(wallet, 'BET', '10.00', { gameId: 'nul\u0000byte' }),
     ]) {
       expect(h.send(bad)).rejects.toThrow(ValidationError);
     }

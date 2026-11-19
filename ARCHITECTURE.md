@@ -183,7 +183,9 @@ violação de integridade ao resolver uma pendência).
 
 O mapeamento é um único filtro (`src/infra/http/http.ts`) aplicado a todos os endpoints. Erro
 desconhecido é tratado como transitório de propósito: se não sabemos o que houve, o seguro é o
-provedor reenviar — a idempotência absorve.
+provedor reenviar — a idempotência absorve. A exceção são os erros de dado do Postgres (SQLSTATE
+classe 22, por exemplo um valor que estoura `numeric(20,2)`): viram `400`, porque reenviar não
+resolve.
 
 ### 2.9 Consumidor SQS e inbox
 
@@ -194,12 +196,15 @@ registrada **e** aplicada, ou nenhuma das duas coisas.
 | Resultado | Ação |
 |---|---|
 | Sucesso, replay ou rejeição de negócio (`REJECTED` persistida) | ack |
-| Mensagem já registrada na inbox | ack |
+| Mensagem já registrada na inbox com o mesmo conteúdo | ack |
+| Mesmo `messageId` com conteúdo diferente (`payload_hash` da inbox não bate) | DLQ com `reason = message_id_conflict` |
 | Erro permanente: JSON malformado, payload inválido, conflito de idempotência, wallet inexistente | envia para a DLQ com o atributo `reason` e faz ack |
 | Erro transitório: banco indisponível, lock timeout, qualquer erro desconhecido | **sem ack**; visibilidade de `2^n` s (teto 60s); após 5 recebimentos a *redrive policy* move para a DLQ |
 
 - O ack (`DeleteMessage`) só é enviado depois que o caso de uso retorna, isto é, depois do commit.
 - FIFO com `MessageGroupId = walletId` é otimização (reduz contenção de lock), não garantia.
+- Falha transitória interrompe o lote daquele grupo: as mensagens seguintes da mesma wallet são
+  devolvidas, para não passarem na frente da que será reentregue.
 - **SIGTERM:** o consumidor para de receber, conclui a mensagem em andamento e devolve as demais com
   visibilidade 0. O long poll em curso não é abortado — abortar no cliente não cancela no servidor,
   que ainda entregaria uma mensagem a uma requisição abandonada (um teste pegou isso).
@@ -215,7 +220,8 @@ publicado antes do commit. O worker faz, em uma transação:
 - **Processo morre depois de publicar e antes do commit:** o evento sai de novo. É at-least-once;
   o consumidor deduplica por `eventId`, que também vai como `MessageDeduplicationId`.
 - **Falha de publicação:** `attempts + 1` e `next_attempt_at` com backoff exponencial (teto 60s). Os
-  eventos seguintes da mesma wallet não são tentados naquele lote, para não inverter a ordem.
+  eventos seguintes da mesma wallet esperam: não são tentados naquele lote, e a consulta do publisher
+  não seleciona um evento enquanto houver um anterior da mesma wallet em backoff.
 - **Custo assumido:** os locks de linha ficam presos durante a chamada ao SQS. O lote é limitado (50)
   e as linhas travadas só interessam a outros publishers, que as pulam.
 
@@ -285,6 +291,9 @@ caminho a menos para testar, ao custo de até ~1s.
 - **Teste de propriedade** (`test/concurrency/property.test.ts`, `fast-check`): gera sequências
   aleatórias de operações com duplicatas, ordem embaralhada e referências válidas e inválidas, dispara
   em paralelo e verifica as invariantes para qualquer sequência.
+- **Revisão independente.** Depois de pronto, o código passou por uma revisão separada focada em
+  correção financeira e mensageria. Não encontrou defeito de saldo; os pontos de mensageria e de
+  classificação de erro que encontrou foram corrigidos e ganharam teste.
 - **Os testes falham quando a garantia some.** Removendo o `FOR UPDATE` de `lockWallet`, 9 testes de
   concorrência falham. (Verificado manualmente; os triggers do banco continuam impedindo corrupção.)
 - Invariante final de todo arquivo de teste: `wallet.balance == saldo reconstruído pelo ledger`.
@@ -331,6 +340,14 @@ continuam sendo canal interno confiável, com as mesmas validações de domínio
   wallet.
 - **Hot wallet** tem throughput limitado pela serialização do lock. É o preço da escolha em 2.3.
 - **`WALLET_NOT_FOUND` não é persistido** (interpretação 5).
+- **A idempotency key é única globalmente**, não por provedor. Sem autenticação, um provedor que
+  adivinhe a key de outro pode ocupá-la. Com o guard real, a unicidade passaria a ser
+  `(provider_id, idempotency_key)`.
+- **`FAILED` não publica evento.** A lista mínima de eventos não tem um para falha permanente; a
+  transação fica auditável no banco, nos logs e na métrica.
+- **Devolver uma mensagem no shutdown consome um recebimento** dos 5 antes da DLQ.
+- **Métricas e logs de transação são emitidos depois do commit**; um processo morto entre o commit e
+  a emissão deixa de contar aquela transação (o banco continua sendo a fonte da verdade).
 - **Eventos do worker de pendências** usam o id da transação como `correlationId`; o original não é
   armazenado.
 - **Métricas são por instância**; a agregação fica para o Prometheus.

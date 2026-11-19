@@ -165,10 +165,14 @@ describe('SQS consumer + inbox', () => {
       await enqueue(sqs, queues.input, wagerMessage(uuid(), h.payload(wallet, 'OPENING', '10.00')), 'g2');
       await enqueue(sqs, queues.input, wagerMessage(uuid(), h.payload(wallet, 'BET', '10.00', { walletId: uuid() })), 'g3');
       await enqueue(sqs, queues.input, wagerMessage(uuid(), { ...processed, money: { amount: '11.00', currency: 'BRL' } }, 'dlq-conflict-key'), 'g4');
-      await waitFor(async () => (await queueDepth(sqs, queues.dlq)) === 4, 20_000, '4 messages in DLQ');
+      // mesmo messageId reutilizado com outro conteúdo: não é redelivery, é bug do produtor
+      const reused = uuid();
+      await enqueue(sqs, queues.input, wagerMessage(reused, h.payload(wallet, 'LOSS', '1.00')), 'g5');
+      await enqueue(sqs, queues.input, wagerMessage(reused, h.payload(wallet, 'BET', '50.00')), 'g5');
+      await waitFor(async () => (await queueDepth(sqs, queues.dlq)) === 5, 20_000, '5 messages in DLQ');
     });
     const reasons = (await drain(sqs, queues.dlq)).map((d) => d.attributes.reason.StringValue).sort();
-    expect(reasons).toEqual(['idempotency_conflict', 'invalid_payload', 'malformed_message', 'wallet_not_found']);
+    expect(reasons).toEqual(['idempotency_conflict', 'invalid_payload', 'malformed_message', 'message_id_conflict', 'wallet_not_found']);
     expect(await h.balance(wallet.id)).toBe('90.00');
   }, 60_000);
 
@@ -248,6 +252,11 @@ describe('transactional outbox', () => {
     expect(rows.map((r) => r.attempts)).toEqual([1, 0]);
     expect(rows[0]!.next_attempt_at).not.toBeNull();
     expect(rows.every((r) => r.published_at === null)).toBe(true);
+
+    // Com o SQS de volta mas o primeiro ainda em backoff, o segundo NÃO passa na frente.
+    const working = new PublishOutbox(h.uow, new SqsEventPublisher(sqs, queues.events));
+    await working.runOnce();
+    expect((await drain(sqs, queues.events)).filter((d) => d.body.aggregateId === wallet.id)).toHaveLength(0);
 
     await Bun.sleep(1200); // backoff da primeira tentativa: 1s
     await untilEmpty(new PublishOutbox(h.uow, new SqsEventPublisher(sqs, queues.events)));

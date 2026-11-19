@@ -41,7 +41,7 @@ export class ReadModel {
   async ledger(walletId: string, cursor: string | undefined, limit: number) {
     await this.wallet(walletId);
     const after = cursor === undefined ? '0' : Buffer.from(cursor, 'base64url').toString();
-    if (!/^\d+$/.test(after)) throw new ValidationError('invalid cursor');
+    if (!/^\d{1,18}$/.test(after)) throw new ValidationError('invalid cursor');
     const rows = await this.query(
       `select id, sequence, transaction_id, direction, amount, currency, balance_before, balance_after, created_at
          from wallet_ledger_entries where wallet_id = ? and sequence > ? order by sequence limit ?`,
@@ -63,15 +63,19 @@ export class ReadModel {
   }
 
   transaction(transactionId: string) {
-    return this.findTransaction(`id = ?`, [transactionId]);
+    return this.findTransaction(`t.id = ?`, [transactionId]);
   }
 
   transactionByProviderRef(providerId: string, externalTransactionId: string) {
-    return this.findTransaction(`provider_id = ? and external_transaction_id = ?`, [providerId, externalTransactionId]);
+    return this.findTransaction(`t.provider_id = ? and t.external_transaction_id = ?`, [providerId, externalTransactionId]);
   }
 
   private async findTransaction(where: string, params: unknown[]) {
-    const [r] = await this.query(`select * from wager_transactions where ${where}`, params);
+    // `where` é sempre um dos dois literais acima; os valores vão como parâmetros.
+    const [r] = await this.query(
+      `select t.*, w.currency as wallet_currency from wager_transactions t join wallets w on w.id = t.wallet_id where ${where}`,
+      params,
+    );
     if (!r) throw new NotFoundError('transaction not found');
     return {
       transactionId: r.id,
@@ -87,7 +91,7 @@ export class ReadModel {
       failureCode: r.failure_code ?? undefined,
       referenceExternalTransactionId: r.reference_external_transaction_id ?? undefined,
       referenceTransactionId: r.reference_transaction_id ?? undefined,
-      balance: r.resulting_balance ? money(r.resulting_balance, r.currency) : undefined,
+      balance: r.resulting_balance ? money(r.resulting_balance, r.wallet_currency) : undefined,
       createdAt: new Date(r.created_at).toISOString(),
       processedAt: r.processed_at ? new Date(r.processed_at).toISOString() : undefined,
     };

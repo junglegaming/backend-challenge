@@ -11,6 +11,8 @@ export class IdempotencyConflictError extends ApplicationError {}
 /** Wallet inexistente ou de outro player. Não persiste transação (não há FK possível). */
 export class WalletNotFoundError extends ApplicationError {}
 export class WalletAlreadyExistsError extends ApplicationError {}
+/** Mesmo messageId reutilizado com outro conteúdo: bug do produtor, não redelivery. */
+export class MessageIdConflictError extends ApplicationError {}
 export class NotFoundError extends ApplicationError {}
 
 /** Violação de unique vinda do banco, traduzida pela infraestrutura. */

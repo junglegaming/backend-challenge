@@ -8,7 +8,6 @@
         "@aws-sdk/client-sqs": "^3.1172.0",
         "@mikro-orm/core": "^7.2.10",
         "@mikro-orm/migrations": "^7.2.10",
-        "@mikro-orm/nestjs": "^7.1.0",
         "@mikro-orm/postgresql": "^7.2.10",
         "@nestjs/common": "^12.5.1",
         "@nestjs/core": "^12.5.1",
@@ -69,8 +68,6 @@
     "@mikro-orm/core": ["@mikro-orm/core@7.2.10", "", { "peerDependencies": { "dataloader": "2.2.3" }, "optionalPeers": ["dataloader"] }, "sha512-ZGRGWT6xmh92u3hdQ7hv9I4XtDTDVaDzKunlLi9T5k/abygY79MWrLeBG1a69991CwVPpQfnlNtGW47oQUlpWg=="],
 
     "@mikro-orm/migrations": ["@mikro-orm/migrations@7.2.10", "", { "dependencies": { "@mikro-orm/sql": "7.2.10" }, "peerDependencies": { "@mikro-orm/core": "7.2.10" } }, "sha512-r+Dyftllq8CrrTaznixUkPd3Vl5FWIy++ZKamsVuw0jD0tEjVTHi2lA/87eGVxTbkNJsrs3Ov6ynI5B3/kJYZA=="],
-
-    "@mikro-orm/nestjs": ["@mikro-orm/nestjs@7.1.0", "", { "peerDependencies": { "@mikro-orm/core": "^7.0.0 || ^7.0.0-dev.0", "@nestjs/common": "^11.0.5 || ^12.0.0", "@nestjs/core": "^11.0.5 || ^12.0.0", "reflect-metadata": "^0.1.0 || ^0.2.0" } }, "sha512-S7UXOR4jYtl+lSl23GxQNoWaI3naf5WGUaWMjqZ1o+xcp+fha8une9Yu3qEizZNA+iulE4qA+yaB6sKnA67fbw=="],
 
     "@mikro-orm/postgresql": ["@mikro-orm/postgresql@7.2.10", "", { "dependencies": { "@mikro-orm/sql": "7.2.10", "kysely": "0.29.9", "pg": "8.23.1", "pg-cursor": "2.22.1", "postgres-array": "3.0.4", "postgres-date": "2.1.0", "postgres-interval": "4.1.0" }, "peerDependencies": { "@mikro-orm/core": "7.2.10" } }, "sha512-nJey5FEtes0+OhU6lr5ap4UK6MuNrRRNGMUw8ex8jSZbPM+c4tmHUjuR3TppB+0aB4xVV3k25RShW5g4Ywy6nw=="],
 

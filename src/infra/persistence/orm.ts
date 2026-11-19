@@ -11,6 +11,6 @@ export const ormConfig = (clientUrl = config.databaseUrl) =>
     entities: records,
     extensions: [Migrator],
     // Lista explícita: sem descoberta por glob, o mesmo comportamento em Bun, testes e container.
-    migrations: { migrationsList: [{ name: 'Migration20261119000000_init', class: Migration20261119000000_init }] },
+    migrations: { snapshot: false, migrationsList: [{ name: 'Migration20261119000000_init', class: Migration20261119000000_init }] },
     pool: { min: 2, max: 20 },
   });

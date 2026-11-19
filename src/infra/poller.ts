@@ -1,3 +1,4 @@
+import { config } from '../config';
 import { logger } from '../observability/logger';
 
 /** Laço de worker: roda `work` em sequência; dorme `idleMs` quando não há nada a fazer. */
@@ -25,9 +26,9 @@ export class Poller {
     })();
   }
 
-  /** Espera a iteração em andamento terminar. */
+  /** Espera a iteração em andamento terminar, até o teto de shutdown. Interromper é seguro: tudo é transacional. */
   async stop(): Promise<void> {
     this.stopped = true;
-    await this.loop;
+    await Promise.race([this.loop, Bun.sleep(config.shutdownTimeoutMs)]);
   }
 }

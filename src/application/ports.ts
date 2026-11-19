@@ -6,8 +6,8 @@ import { Wallet } from '../domain/wallet';
 
 /** Acesso a dados dentro de UMA transação SQL. Tudo que passa por aqui é atômico. */
 export interface TxStore {
-  /** false se a mensagem já estava registrada (redelivery). */
-  insertInbox(message: InboxMessage): Promise<boolean>;
+  /** `duplicate`: redelivery da mesma mensagem. `conflict`: mesmo messageId com outro conteúdo. */
+  insertInbox(message: InboxMessage): Promise<'inserted' | 'duplicate' | 'conflict'>;
   markInboxProcessed(message: InboxMessage): Promise<void>;
 
   /** SELECT ... FOR UPDATE: serializa todas as operações da wallet entre instâncias. */
