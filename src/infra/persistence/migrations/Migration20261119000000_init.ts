@@ -27,7 +27,7 @@ export class Migration20261119000000_init extends Migration {
         external_transaction_id text not null,
         idempotency_key text not null,
         payload_hash char(64) not null,
-        wallet_id uuid not null references wallets (id),
+        wallet_id uuid not null references wallets (id) deferrable initially deferred,
         player_id uuid not null,
         round_id text not null,
         game_id text not null,
@@ -35,7 +35,7 @@ export class Migration20261119000000_init extends Migration {
         amount numeric(20,2) not null check (amount >= 0),
         currency char(3) not null,
         reference_external_transaction_id text,
-        reference_transaction_id uuid references wager_transactions (id),
+        reference_transaction_id uuid references wager_transactions (id) deferrable initially deferred,
         status text not null check (status in ('PENDING', 'PENDING_REFERENCE', 'PROCESSED', 'REJECTED', 'FAILED')),
         failure_code text,
         resulting_balance numeric(20,2),
@@ -86,8 +86,8 @@ export class Migration20261119000000_init extends Migration {
       create table wallet_ledger_entries (
         id uuid primary key,
         sequence bigint generated always as identity,
-        wallet_id uuid not null references wallets (id),
-        transaction_id uuid not null references wager_transactions (id),
+        wallet_id uuid not null references wallets (id) deferrable initially deferred,
+        transaction_id uuid not null references wager_transactions (id) deferrable initially deferred,
         direction text not null check (direction in ('DEBIT', 'CREDIT')),
         amount numeric(20,2) not null check (amount > 0),
         currency char(3) not null,
@@ -137,10 +137,11 @@ export class Migration20261119000000_init extends Migration {
     this.addSql(`
       create function wallet_balance_matches_ledger() returns trigger language plpgsql as $$
       declare
-        target uuid := case tg_table_name when 'wallets' then new.id else new.wallet_id end;
+        target uuid;
         stored numeric(20,2);
         ledger numeric(20,2);
       begin
+        if tg_table_name = 'wallets' then target := new.id; else target := new.wallet_id; end if;
         select balance into stored from wallets where id = target;
         select balance_after into ledger from wallet_ledger_entries
           where wallet_id = target order by sequence desc limit 1;
