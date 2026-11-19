@@ -1,6 +1,6 @@
 # Distributed Wagering Processor — Design
 
-Data: 2026-11-19 · Branch: `feat/wagering-processor` · Fonte de requisitos: `README.md`
+Data: 2026-11-19 · Branch: `feat/wagering-processor` · Fonte de requisitos: `CHALLENGE.md`
 
 ## 1. Intenção
 
