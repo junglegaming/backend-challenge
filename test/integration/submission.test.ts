@@ -120,16 +120,16 @@ describe('business rules', () => {
     const bet = h.payload(wallet, 'BET', '30.00');
     await h.send(bet);
     const ref = { referenceExternalTransactionId: bet.externalTransactionId };
-    expect((await h.send(h.payload(wallet, 'REFUND', '29.99', ref))).failureCode as string).toBe('AMOUNT_MISMATCH');
-    expect((await h.send(h.payload(wallet, 'REFUND', '30.00', { ...ref, roundId: 'other-round' }))).failureCode as string).toBe('REFERENCE_MISMATCH');
+    expect((await h.send(h.payload(wallet, 'REFUND', '29.99', ref))).failureCode).toBe('AMOUNT_MISMATCH');
+    expect((await h.send(h.payload(wallet, 'REFUND', '30.00', { ...ref, roundId: 'other-round' }))).failureCode).toBe('REFERENCE_MISMATCH');
 
     const win = h.payload(wallet, 'WIN', '5.00');
     await h.send(win);
-    expect((await h.send(h.payload(wallet, 'REFUND', '5.00', { referenceExternalTransactionId: win.externalTransactionId }))).failureCode as string).toBe('INVALID_REFERENCE_KIND');
+    expect((await h.send(h.payload(wallet, 'REFUND', '5.00', { referenceExternalTransactionId: win.externalTransactionId }))).failureCode).toBe('INVALID_REFERENCE_KIND');
 
     const rejectedBet = h.payload(wallet, 'BET', '9999.00');
     await h.send(rejectedBet);
-    expect((await h.send(h.payload(wallet, 'REFUND', '9999.00', { referenceExternalTransactionId: rejectedBet.externalTransactionId }))).failureCode as string).toBe('REFERENCE_NOT_PROCESSED');
+    expect((await h.send(h.payload(wallet, 'REFUND', '9999.00', { referenceExternalTransactionId: rejectedBet.externalTransactionId }))).failureCode).toBe('REFERENCE_NOT_PROCESSED');
     expect(await h.balance(wallet.id)).toBe('75.00');
   });
 

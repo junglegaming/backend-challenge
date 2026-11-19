@@ -36,7 +36,6 @@ const envelopeSchema = z.object({
  */
 export class WagerTransactionsConsumer {
   private stopping = false;
-  private abort = new AbortController();
   private loop?: Promise<void>;
 
   constructor(
@@ -49,10 +48,14 @@ export class WagerTransactionsConsumer {
     this.loop = this.run();
   }
 
-  /** SIGTERM: para de receber, conclui o que está em andamento e devolve o que não começou. */
+  /**
+   * SIGTERM: para de receber, conclui o que está em andamento e devolve o que não começou.
+   * O long poll em curso NÃO é abortado: abortar no cliente não cancela no servidor, que ainda
+   * pode entregar uma mensagem a uma requisição que ninguém mais escuta (ela só voltaria após o
+   * visibility timeout, com um recebimento a menos antes da DLQ). Esperamos o poll terminar.
+   */
   async stop(): Promise<void> {
     this.stopping = true;
-    this.abort.abort();
     await Promise.race([this.loop, Bun.sleep(config.shutdownTimeoutMs)]);
   }
 
@@ -66,7 +69,6 @@ export class WagerTransactionsConsumer {
             WaitTimeSeconds: config.sqs.waitTimeSeconds,
             MessageSystemAttributeNames: ['ApproximateReceiveCount', 'MessageGroupId'],
           }),
-          { abortSignal: this.abort.signal },
         );
         // Grupos (wallets) em paralelo; dentro do grupo, em ordem.
         const groups = Map.groupBy(Messages, (m) => m.Attributes?.MessageGroupId ?? m.MessageId!);
@@ -104,6 +106,7 @@ export class WagerTransactionsConsumer {
         correlationId: envelope.correlationId ?? envelope.messageId,
         inbox: { messageId: envelope.messageId, payloadHash: sha256(body) },
       });
+      if (config.faultInjection === 'crash_before_ack') process.kill(process.pid, 'SIGKILL');
       await this.ack(message);
     } catch (error) {
       if (error instanceof ValidationError) return this.deadLetter(message, 'invalid_payload', log);
@@ -112,7 +115,7 @@ export class WagerTransactionsConsumer {
 
       // Transitório: a mensagem volta para a fila depois de um backoff crescente.
       const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? 1);
-      const delay = Math.min(2 ** receiveCount, 60);
+      const delay = Math.min(2 ** receiveCount, config.sqs.maxRetryDelaySeconds);
       metrics.retries.inc({ source: 'sqs' });
       log.warn({ err: error, receiveCount, retryInSeconds: delay }, 'transient failure, message will be redelivered');
       await this.changeVisibility(message, delay);

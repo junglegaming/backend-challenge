@@ -20,6 +20,8 @@ export const config = {
     maxReceiveCount: int('SQS_MAX_RECEIVE_COUNT', 5),
     visibilityTimeoutSeconds: int('SQS_VISIBILITY_TIMEOUT_SECONDS', 30),
     waitTimeSeconds: int('SQS_WAIT_TIME_SECONDS', 2),
+    /** Teto do backoff de visibilidade (2^n segundos) em falha transitória. */
+    maxRetryDelaySeconds: int('SQS_MAX_RETRY_DELAY_SECONDS', 60),
   },
   consumerName: 'wager-transactions-consumer',
   outbox: { pollMs: int('OUTBOX_POLL_MS', 250), batchSize: int('OUTBOX_BATCH_SIZE', 50) },
@@ -30,4 +32,9 @@ export const config = {
     maxAttempts: int('PENDING_REFERENCE_MAX_ATTEMPTS', 8),
   },
   shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 10_000),
+  /**
+   * Injeção de falha, usada só pelos testes de crash. `crash_before_ack` mata o processo (SIGKILL)
+   * depois do commit e antes do ack — o ponto exato que a inbox existe para cobrir.
+   */
+  faultInjection: env('FAULT_INJECTION', ''),
 };
